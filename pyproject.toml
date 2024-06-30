@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "qml2"
+version = "0.1.0"
+dependencies=[
+  "numpy",
+  "numba",
+  "scipy",
+  "threadpoolctl"
+]
+authors=[
+ {name="Konstantin Karandashev"},
+ {name="Stefan Heinen"},
+ {name="Danish Khan"},
+ {name="Jan Weinreich"},
+]
+description="Collection of Quantum Machine Learning routines"
+readme="README.md"
+license={text="MIT License"}
+[tool.setuptools]
+packages=["qml2", "qml2.orb_ml", "qml2.representations", "qml2.models", "qml2.jit_interfaces", "qml2.dataset_formats", "qml2.kernels", "qml2.test_utils", "qml2.gpytorch", "qml2.cupy"]
+[project.optional-dependencies]
+torch=["torch"]
+orb_ml=["pyscf", "geometric"]
+[tool.setuptools.package-data]
+qml2 = ["*/*.cu"]

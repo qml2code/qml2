@@ -1,0 +1,189 @@
+from multiprocessing import Pool
+from typing import List, Tuple, Union
+
+import numpy as np
+from numba import jit, prange
+from scipy.linalg import cho_factor, cho_solve, lu_factor, lu_solve
+
+from .jit_manager import defined_jit_, numba_flag
+
+Pool_ = Pool
+
+jit_ = defined_jit_(jit, numba_flag)
+
+DimsSequenceType_ = Union[List[int], Tuple[int]]  # Union[List[int], Tuple[int, ...]]
+
+LinAlgError_ = np.linalg.LinAlgError
+
+concatenate_ = np.concatenate
+
+array_jittable_ = np.array
+
+
+# For compatibility when compiled with Torch.
+class Module_:
+    def __init__(self):
+        pass
+
+    def forward(self):
+        pass
+
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+    def compile(self):
+        pass
+
+
+#        print("WARNING: .compile() was called in Numpy/Numba mode.")
+
+
+def Parameter_(arg):
+    return arg
+
+
+# TODO: KK: TBH depends on some Numba quirk I don't understand, needs to be tested more thoroughly.
+@jit_
+def all_tuple_dim_smaller_(t1, t2):
+    """
+    If t1=arr1.shape and t2=arr2.shape determines whether arr2 is large enough to store arr1.
+    """
+    return t1 <= t2
+
+
+# KK: I saw conflicting (outdated?) information on whether flip allocates a new copy
+flip_ = np.flip
+
+# To maintain compatibility with pyTorch, we distinguish between standalone integers, integers that are part of
+# an array, and the corresponding types. In Numba those are largely the same thing, as reflected by numerous repetitions.
+# datatypes
+float_ = np.float64
+int_ = np.int64
+bool_ = np.bool_
+dfloat_ = np.float64
+dint_ = np.int64
+dbool_ = np.bool_
+ndarray_ = np.ndarray
+optional_ndarray_ = Union[ndarray_, None]
+dtype_ = type
+dim0float_array_ = dfloat_
+dim0int_array_ = dint_
+# constructors for standalone
+constr_float_ = float_
+constr_int_ = int_
+constr_bool_ = bool_
+# constructors for array components.
+constr_dfloat_ = float_
+constr_dint_ = int_
+constr_dbool_ = bool_
+
+
+def is_scalar_(val):
+    if isinstance(val, ndarray_):
+        return val.shape == ()
+    else:
+        return True
+
+
+@jit_
+def zero_scalar_():
+    return 0.0
+
+
+def hermitian_matrix_inverse_(mat):
+    return np.linalg.pinv(mat, hermitian=True)
+
+
+# special variables
+inf_ = np.inf
+isinf_ = np.isinf
+# array constructors
+array_ = np.array
+empty_ = np.empty
+zeros_ = np.zeros
+ones_ = np.ones
+eye_ = np.eye
+repeat_ = np.repeat
+
+# random-related
+random_ = np.random.random
+default_rng_ = np.random.default_rng
+
+
+@jit_
+def random_array_from_rng_(size=(1,), rng=None):
+    if rng is None:
+        return random_(size)
+    else:
+        return rng.random(size)
+
+
+standard_normal_ = np.random.standard_normal
+randint_ = np.random.randint
+seed_ = np.random.seed
+permutation_ = np.random.permutation
+# copying
+copy_ = np.copy
+copy_detached_ = copy_  # only different in pyTorch
+# array lookup and manipulation
+where_ = np.where
+argsort_ = np.argsort
+diag_indices_from_ = np.diag_indices_from
+append_ = np.append
+delete_ = np.delete
+searchsorted_ = np.searchsorted
+max_ = np.max
+min_ = np.min
+sign_ = np.sign
+floor_ = np.floor
+mean_ = np.mean
+std_ = np.std
+sort_ = np.sort
+# logical
+logical_not_ = np.logical_not
+any_ = np.any
+all_ = np.all
+# linear operations
+dot_ = np.dot
+matmul_ = np.matmul
+# trigonometry
+cos_ = np.cos
+sin_ = np.sin
+arccos_ = np.arccos
+# analytic functions
+sqrt_ = np.sqrt
+exp_ = np.exp
+log_ = np.log
+# Generating grids.
+linspace_ = np.linspace
+# loops
+prange_ = prange
+# common functions
+sum_ = np.sum
+abs_ = np.abs
+square_ = np.square
+l2_norm_ = np.linalg.norm
+# linear algebra
+cho_factor_ = cho_factor
+svd_ = np.linalg.svd
+eigh_ = np.linalg.eigh
+cho_solve_ = cho_solve
+lu_factor_ = lu_factor
+lu_solve_ = lu_solve
+lstsq_ = np.linalg.lstsq
+# important constants
+pi_ = np.pi
+
+
+# Only needed to keep torch differentiability.
+@jit_
+def save_(arr: ndarray_):
+    return arr
+
+
+@jit_
+def permuted_range_(n: int_):
+    output = empty_((n,), dtype=dint_)
+    for i in range(n):
+        output[i] = i
+    return permutation_(output)
