@@ -1,48 +1,72 @@
 # TODO K.Karan.: Need to check that the test set includes molecules larger in furthest atom distance than
 # cutoff distance for local representations. Use LJ random configurations?
-import importlib
 import random
 
-import numpy as np
 from conftest import add_checksum_to_dict, compare_or_create, perturbed_xyz_examples
 
-from qml2.utils import read_xyz_file
-
-interface_submodule = importlib.import_module("qml2.representations")
-imported_representations = interface_submodule.__dict__
+from qml2 import Compound, CompoundList
+from qml2.jit_interfaces import array_, concatenate_
 
 ntest_mols = 2000
 
 
-def run_single_representation_test(rep_func_name, rng, checksums_storage, local=False):
-    rep_func = imported_representations[rep_func_name]
+def checksums_single_representation(rep_func_name, rng, checksums_storage, local=False):
     xyzs = perturbed_xyz_examples(rng, ntest_mols)
-    all_representations = []
-    for xyz in xyzs:
-        nuclear_charges, _, coordinates, _ = read_xyz_file(xyz)
-        all_representations.append(rep_func(nuclear_charges, coordinates))
+    compound_list = CompoundList([Compound(xyz=xyz) for xyz in xyzs])
+    call = getattr(compound_list, rep_func_name)
+    call(test_mode=True)
+    all_representations = compound_list.all_representations()
     if local:
-        merged_reps = np.concatenate(all_representations)
+        merged_reps = concatenate_(all_representations)
     else:
-        merged_reps = np.array(all_representations)
+        merged_reps = array_(all_representations)
 
     add_checksum_to_dict(
         checksums_storage, rep_func_name, merged_reps, rng, nstack_checksums=8, stacks=32
     )
 
 
-def test_representations():
-    test_name = "representations"
+def checksums_bob(rng, checksums_storage, **kwargs):
+    from qml2.representations import compute_ncm, get_bob_bags
+
+    xyzs = perturbed_xyz_examples(rng, ntest_mols)
+    compound_list = CompoundList([Compound(xyz=xyz) for xyz in xyzs])
+    all_nuclear_charges = compound_list.all_nuclear_charges()
+    bags = get_bob_bags(all_nuclear_charges)
+    ncm = compute_ncm(bags)
+
+    compound_list.generate_bob(bags, ncm=ncm, test_mode=True)
+
+    merged_reps = array_(compound_list.all_representations())
+
+    add_checksum_to_dict(checksums_storage, "bob", merged_reps, rng, nstack_checksums=8, stacks=32)
+
+
+def run_single_representation_test(rep_name, **kwargs):
+    rep_func_name = "generate_" + rep_name
     checksums_storage = {}
     checksums_rng = random.Random(1)
-    global_rep_names = ["generate_coulomb_matrix"]
-    local_rep_names = ["generate_fchl19"]
-    for rep_name in global_rep_names:
-        run_single_representation_test(rep_name, checksums_rng, checksums_storage, local=False)
-    for rep_name in local_rep_names:
-        run_single_representation_test(rep_name, checksums_rng, checksums_storage, local=True)
-    compare_or_create(checksums_storage, test_name, max_rel_difference=1.0e-10)
+    if rep_name == "bob":
+        checksums_bob(checksums_rng, checksums_storage, **kwargs)
+    else:
+        checksums_single_representation(rep_func_name, checksums_rng, checksums_storage, **kwargs)
+
+    compare_or_create(checksums_storage, rep_name, max_rel_difference=1.0e-10)
+
+
+def test_coulomb_matrix():
+    run_single_representation_test("coulomb_matrix")
+
+
+def test_fchl19():
+    run_single_representation_test("fchl19", local=True)
+
+
+def test_bob():
+    run_single_representation_test("bob")
 
 
 if __name__ == "__main__":
-    test_representations()
+    test_coulomb_matrix()
+    test_fchl19()
+    test_bob()

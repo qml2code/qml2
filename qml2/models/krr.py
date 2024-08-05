@@ -184,7 +184,7 @@ class KRRModel(Module_):
     def combine_representations(self, representations_list):
         return array_(representations_list)
 
-    def get_all_representations(self, all_nuclear_charges, all_coords, suppress_openmp=False):
+    def get_all_representations(self, all_nuclear_charges, all_coords, suppress_openmp=True):
         if suppress_openmp:
             fixed_num_threads = 1
         else:
@@ -292,7 +292,7 @@ class KRRLocalModel(KRRModel):
         self.get_alphas_w_lambda(train_kernel, shifted_training_set_values)
 
     def combine_representations(self, representations_list):
-        return concatenate_(tuple(representations_list))
+        return concatenate_(representations_list)
 
     def train(
         self,

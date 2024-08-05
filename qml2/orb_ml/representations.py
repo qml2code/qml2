@@ -4,6 +4,7 @@ from ..jit_interfaces import (
     cos_,
     dot_,
     float_,
+    int_,
     jit_,
     matmul_,
     ones_,
@@ -16,8 +17,73 @@ from ..utils import weighted_array
 
 # Some auxiliary numba functions.
 @jit_
+def add_aos_coupling(
+    mat,
+    coeffs,
+    angular_momenta,
+    ang_mom2: int_,
+    lower_index: int_,
+    upper_index: int_,
+    ao1: int_,
+    cur_coupling_val,
+):
+    for ao2 in range(lower_index, upper_index):
+        if angular_momenta[ao2] == ang_mom2:
+            cur_coupling_val[:] += mat[ao2, ao1] * coeffs[ao1] * coeffs[ao2]
+
+
+@jit_
+def add_orb_atom_coupling(
+    mat,
+    coeffs,
+    angular_momenta,
+    atom_ao_range,
+    same_atom: int_,
+    ang_mom1: int_,
+    ang_mom2: int_,
+    cur_coupling_val,
+):
+    ao_lb = int(atom_ao_range[0])
+    ao_ub = int(atom_ao_range[1])
+    for ao1 in range(ao_lb, ao_ub):
+        if angular_momenta[ao1] == ang_mom1:
+            if same_atom == 0:
+                add_aos_coupling(
+                    mat,
+                    coeffs,
+                    angular_momenta,
+                    ang_mom2,
+                    ao_lb,
+                    ao_ub,
+                    ao1,
+                    cur_coupling_val,
+                )
+            else:
+                add_aos_coupling(
+                    mat,
+                    coeffs,
+                    angular_momenta,
+                    ang_mom2,
+                    0,
+                    ao_lb,
+                    ao1,
+                    cur_coupling_val,
+                )
+                add_aos_coupling(
+                    mat,
+                    coeffs,
+                    angular_momenta,
+                    ang_mom2,
+                    ao_ub,
+                    coeffs.shape[0],
+                    ao1,
+                    cur_coupling_val,
+                )
+
+
+@jit_
 def gen_orb_atom_scalar_rep(
-    coup_mats, coeffs, angular_momenta, atom_ao_range, max_ang_mom, scalar_reps
+    coup_mats, coeffs, angular_momenta, atom_ao_range, max_ang_mom: int_, scalar_reps
 ):
     cur_array_position = 0
     num_coup_mats = coup_mats.shape[0]
@@ -42,71 +108,8 @@ def gen_orb_atom_scalar_rep(
 
 
 @jit_
-def add_orb_atom_coupling(
-    mat,
-    coeffs,
-    angular_momenta,
-    atom_ao_range,
-    same_atom,
-    ang_mom1,
-    ang_mom2,
-    cur_coupling_val,
-):
-    for ao1 in range(atom_ao_range[0], atom_ao_range[1]):
-        if angular_momenta[ao1] == ang_mom1:
-            if same_atom == 0:
-                add_aos_coupling(
-                    mat,
-                    coeffs,
-                    angular_momenta,
-                    ang_mom2,
-                    atom_ao_range[0],
-                    atom_ao_range[1],
-                    ao1,
-                    cur_coupling_val,
-                )
-            else:
-                add_aos_coupling(
-                    mat,
-                    coeffs,
-                    angular_momenta,
-                    ang_mom2,
-                    0,
-                    atom_ao_range[0],
-                    ao1,
-                    cur_coupling_val,
-                )
-                add_aos_coupling(
-                    mat,
-                    coeffs,
-                    angular_momenta,
-                    ang_mom2,
-                    atom_ao_range[1],
-                    coeffs.shape[0],
-                    ao1,
-                    cur_coupling_val,
-                )
-
-
-@jit_
-def add_aos_coupling(
-    mat,
-    coeffs,
-    angular_momenta,
-    ang_mom2,
-    lower_index,
-    upper_index,
-    ao1,
-    cur_coupling_val,
-):
-    for ao2 in range(lower_index, upper_index):
-        if angular_momenta[ao2] == ang_mom2:
-            cur_coupling_val[:] += mat[ao2, ao1] * coeffs[ao1] * coeffs[ao2]
-
-
-@jit_
 def ang_mom_descr(
-    ovlp_mat, coeffs, angular_momenta, atom_ao_range, max_ang_mom, scalar_reps, rho_val
+    ovlp_mat, coeffs, angular_momenta, atom_ao_range, max_ang_mom: int_, scalar_reps, rho_val
 ):
     scalar_reps[:] = 0.0
     for ang_mom in range(1, max_ang_mom + 1):

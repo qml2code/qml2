@@ -5,7 +5,7 @@ import tarfile
 
 import numpy as np
 
-from qml2.compound import Compound
+from qml2 import Compound, CompoundList
 
 
 def get_energies(filename, key="dft"):
@@ -51,7 +51,7 @@ copy_data()
 qm7_dft_energy = get_energies("hof_qm7.txt", key="dft")
 qm7_delta_energy = get_energies("hof_qm7.txt", key="delta")
 
-compounds = [Compound(xyz="qm7/" + f) for f in sorted(os.listdir("qm7/"))]
+compounds = CompoundList([Compound(xyz="qm7/" + f) for f in sorted(os.listdir("qm7/"))])
 
 for mol in compounds:
     mol.properties = qm7_dft_energy[mol.name]

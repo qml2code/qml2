@@ -185,7 +185,9 @@ def xyz_string(coordinates, elements=None, nuclear_charges=None, extra_string=""
         elements = [str_atom_corr(charge) for charge in nuclear_charges]
     output = str(len(coordinates)) + "\n" + extra_string
     for atom_coords, element in zip(coordinates, elements):
-        output += "\n" + element + " " + " ".join([str(atom_coord) for atom_coord in atom_coords])
+        output += (
+            "\n" + element + " " + " ".join([str(float(atom_coord)) for atom_coord in atom_coords])
+        )
     return output
 
 

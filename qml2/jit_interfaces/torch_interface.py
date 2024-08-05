@@ -1,20 +1,25 @@
 # from torch._prims_common import DimsSequenceType
 
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import torch
 from torch import tensor
 
+from ..basic_utils import checked_environ_val
 from .jit_manager import defined_jit_, torch_flag
+
+torch_default_device_env_name = "QML2_DEFAULT_TORCH_DEVICE"
 
 # NOTE: KK: Introduced for consistency with NumPy. Perhaps will be managed properly in the future.
 torch.set_default_dtype(torch.float64)
 
+multiprocessing_ = torch.multiprocessing
 
-# from torch.multiprocessing import Pool
-# Pool_ = Pool
-# TODO: uncomment once torch becomes available for Py3.12 and delete the following class.
+
+# Pool_ = multiprocessing_.Pool
+# TODO: As of 2024.07.11 the code has some weird problems with torch.multiprocessing.Pool.
+# Check if it's still the case couple of Torch releases later.
 class Pool_:
     def __init__(self, n):
         self.n = n
@@ -28,8 +33,6 @@ class Pool_:
 
 DimsSequenceType_ = List[int]  # Union[List[int], Tuple[int]]  # Union[List[int], Tuple[int, ...]]
 
-# WARNING: Think more about copy_/copy_detached_ usage.
-
 
 # For building Torch models.
 class Module_(torch.nn.Module):
@@ -40,39 +43,20 @@ class Module_(torch.nn.Module):
 Parameter_ = torch.nn.Parameter
 
 
-# Which device everything is store on.
+# Which device everything is stored on.
 # Taken from:https://stackoverflow.com/questions/53266350/how-to-tell-pytorch-to-not-use-the-gpu
 def recommended_device():
     return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
-default_device = None
-
-
-# TODO: perhaps should be deleted completely. torch.set_default_device more useful anyway.
-def set_default_device(new_device):
-    global default_device
-    default_device = new_device
-
-
+# For conveniently checking where PyTorch puts everything.
 def print_default_device():
     test_array = array_([1])
     print(test_array.device)
 
 
-# Calculate gradient or not.
-default_requires_grad = False
-
-
-# KK. TBH I am not sure why an application would need to set default_requires_grad=True.
-def set_default_require_grad(new_requires_grad: bool):
-    global default_requires_grad
-    default_requires_grad = new_requires_grad
-
-
 # JIT compilation.
 jit_ = defined_jit_(torch.jit.script, torch_flag, possible_jit_failures=[TypeError, RuntimeError])
-
 
 # datatypes
 float_ = float
@@ -84,9 +68,10 @@ dbool_ = torch.bool
 ndarray_ = torch.Tensor
 dtype_ = torch.dtype
 optional_dtype_ = Union[dtype_, None]
-optional_ndarray_ = Union[ndarray_, None]
+optional_ndarray_ = Optional[ndarray_]
 dim0float_array_ = torch.Tensor
 dim0int_array_ = torch.Tensor
+OptionalGenerator_ = Optional[torch.Generator]
 # constructors for standalone
 constr_float_ = float
 
@@ -130,8 +115,8 @@ def constr_dbool_(val: bool, dbool_: dtype_ = dbool_):
 # Functions for which transition from Numpy/Numba to Torch is not straightforward
 def array_(
     converted_array,
-    torch_device: torch.device = default_device,
-    torch_requires_grad: bool_ = default_requires_grad,
+    torch_device: Optional[torch.device] = None,
+    torch_requires_grad: Optional[bool_] = False,
     dtype: optional_dtype_ = None,
 ):
     # Additionally make sure tensor is stored on correct device.
@@ -191,13 +176,15 @@ def random_(size: DimsSequenceType_ = ()):
     return torch.rand(size)
 
 
-default_rng_ = torch.Generator
+def default_rng_(seed: Optional[int] = None):
+    output = torch.Generator(device="cpu")
+    if seed is not None:
+        output.manual_seed(seed)
+    return output
 
 
 @jit_
-def random_array_from_rng_(
-    size: DimsSequenceType_ = (1,), rng: Union[torch.Generator, None] = None
-):
+def random_array_from_rng_(size: DimsSequenceType_ = (1,), rng: OptionalGenerator_ = None):
     return torch.rand(size, generator=rng)
 
 
@@ -263,6 +250,7 @@ def diag_indices_from_(mat):
     return (l, l)
 
 
+# WARNING: Think more about copy_/copy_detached_ usage.
 @jit_
 def copy_(tensor):
     return tensor.clone()
@@ -303,6 +291,20 @@ isinf_ = torch.isinf
 pi_ = tensor(torch.pi)
 # array lookup and manipulation
 where_ = torch.where
+
+
+@jit_
+def elements_where_(val_arr, bool_arr):
+    # because where_ in these situations causes problems with TorchScript.
+    ids = where_(bool_arr)[0]
+    new_val_arr = copy_(val_arr[: int(ids[-1])])
+    j = 0
+    for i in ids:
+        new_val_arr[j] = val_arr[int(i)]
+        j += 1
+    return new_val_arr
+
+
 argsort_ = torch.argsort
 searchsorted_ = torch.searchsorted
 
@@ -360,6 +362,8 @@ def dot_(v1, v2, out: Union[ndarray_, None] = None):
         return matmul_(v1, v2, out=out)
 
 
+cross_ = torch.cross
+
 # trigonometry
 cos_ = torch.cos
 sin_ = torch.sin
@@ -367,6 +371,9 @@ arccos_ = torch.arccos
 # analytic functions
 sqrt_ = torch.sqrt
 exp_ = torch.exp
+cosh_ = torch.cosh
+sinh_ = torch.sinh
+tanh_ = torch.tanh
 log_ = torch.log
 # Generating grids.
 linspace_ = torch.linspace
@@ -374,8 +381,15 @@ linspace_ = torch.linspace
 
 # common functions
 @jit_
-def sum_(t, axis: int = 0):
-    return torch.sum(t, dim=axis)
+def sum_(t, axis: Optional[int_] = None):
+    if axis is None:
+        return torch.sum(t)
+    else:
+        return torch.sum(t, dim=int(axis))
+
+
+def prod_(t):
+    return torch.prod(array_(t))
 
 
 abs_ = torch.abs
@@ -418,3 +432,11 @@ def all_tuple_dim_smaller_(t1: DimsSequenceType_, t2: DimsSequenceType_):
         if t1[i] > t2[i]:
             return False
     return True
+
+
+if __name__ != "__main__":
+    torch_default_device = checked_environ_val(torch_default_device_env_name, var_class=str)
+    if torch_default_device:
+        torch.set_default_device(torch_default_device)
+    print("QML2 now uses Torch, device:")
+    print_default_device()

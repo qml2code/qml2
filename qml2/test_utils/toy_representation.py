@@ -17,6 +17,24 @@ def all_atoms_relevant(natoms: int_, max_natoms: int_, dint_: dtype_ = dint_):
 def generate_toy_representation_with_gradients(
     nuclear_charges, coordinates, max_natoms=None, nCartDim: int_ = nCartDim, inf_=inf_
 ):
+    """
+    Generates an array consisting of nuclear charge and inverse distance values for neighbors of each atoms,
+    along with the corresponding derivatives. Designed for testing purposes.
+
+    Output:
+        representations - natoms x repsize array of representation vectors
+        num_neighbors - natoms integer array - for each "central" atom contains total number of "neighbor" atoms,
+                        defined such that derivative of central atom's representation w.r.t. their positions
+                        can be non-zero.
+        rel_neighbor_list - natoms x max_num_neighbors integer array, for each atom `i` contains indices
+                        of its neighbor atoms (including index of the "central atom" itself) in the first
+                        `num_neighbors[i]` entries of `rel_neighbor_list[i]`.
+        representation_gradients - natoms x repsize x max_num_neighbors x CartDim - for a central atom with index `i`,
+                        a neighbor atom with index `j`, and representation
+                        component `k`, `representation_gradients[i, k, j, :]` contains derivative of `representations[i, k]`
+                        w.r.t. `coordinates[rel_neighbor_list[j], :]`
+
+    """
     natoms = nuclear_charges.shape[0]
     if max_natoms is None:
         max_natoms = natoms

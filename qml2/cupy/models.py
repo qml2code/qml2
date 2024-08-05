@@ -3,15 +3,22 @@ import numpy as np
 
 from ..kernels.kernels import construct_gaussian_kernel
 from ..models.krr import KRRLocalModel, KRRModel
-from .kernels import gaussian_kernel, local_dn_gaussian_kernel
+from .raw_kernels import get_inside_kernel_routine
 
 
 class CuPyKRRModel(KRRModel):
-    def __init__(self, blocks_per_grid=(1,), threads_per_block=(1,), **other_kwargs):
+    def __init__(
+        self,
+        blocks_per_grid=None,
+        threads_per_block=None,
+        kernel_definition_kwargs={"kernel_type": "gaussian"},
+        **other_kwargs
+    ):
         """
         First value in blocks and threads number tuples controls parallelization
         over training set molecules, second value - over representation of test molecules (in predict_from_representations).
         """
+        self.kernel_definition_kwargs = kernel_definition_kwargs
         self.base_init(**other_kwargs)
         self.blocks_per_grid = blocks_per_grid
         self.threads_per_block = threads_per_block
@@ -19,6 +26,7 @@ class CuPyKRRModel(KRRModel):
 
     def base_init(self, **kwargs):
         KRRModel.__init__(self, **kwargs)
+        self.inside_kernel = get_inside_kernel_routine(**self.kernel_definition_kwargs)
 
     def init_kernel_functions(self, kernel_constructor, **other_kwargs):
         assert kernel_constructor is construct_gaussian_kernel
@@ -61,25 +69,20 @@ class CuPyKRRModel(KRRModel):
         self.init_temp_reps()
 
     def predict_from_kernel(self, nmols=1):
-        return cp.dot(self.alphas, self.temp_kernel[:, :nmols]) + self.val_shift
+        return cp.dot(self.temp_kernel.T[:nmols, :], self.alphas) + self.val_shift
 
     def predict_from_representations(self, representations_gpu):
         assert self.nfeatures == representations_gpu.shape[1]
         nmols = representations_gpu.shape[0]
-        if (self.temp_kernel is None) or (nmols > self.temp_kernel.shape[1]):
-            self.temp_kernel = cp.empty((self.ntrain, nmols))
-        gaussian_kernel(
-            self.blocks_per_grid,
-            self.threads_per_block,
-            (
-                self.training_set_representations,
-                representations_gpu,
-                self.sigma,
-                self.ntrain,
-                nmols,
-                self.nfeatures,
-                self.temp_kernel,
-            ),
+        if (self.temp_kernel is None) or (nmols > self.temp_kernel.shape[0]):
+            self.temp_kernel = cp.empty((nmols, self.ntrain))
+        self.inside_kernel(
+            representations_gpu,
+            self.training_set_representations,
+            self.sigma,
+            out=self.temp_kernel.T[:nmols],
+            blocks_per_grid=self.blocks_per_grid,
+            threads_per_block=self.threads_per_block,
         )
         return self.predict_from_kernel(nmols=nmols)
 
@@ -92,6 +95,9 @@ class CuPyKRRModel(KRRModel):
 class CuPyKRRLocalModel(CuPyKRRModel, KRRLocalModel):
     def base_init(self, **kwargs):
         KRRLocalModel.__init__(self, **kwargs)
+        used_kernel_definition_kwargs = self.kernel_definition_kwargs
+        used_kernel_definition_kwargs["local_dn"] = True
+        self.inside_kernel = get_inside_kernel_routine(**used_kernel_definition_kwargs)
 
     def relevant_model_parameters(self):
         return [
@@ -121,24 +127,18 @@ class CuPyKRRLocalModel(CuPyKRRModel, KRRLocalModel):
             nmols = atom_nums.shape[0]
         if (self.temp_kernel is None) or (nmols > self.temp_kernel.shape[1]):
             self.temp_kernel = cp.empty((self.ntrain, nmols))
-
         assert self.local_dn
-        local_dn_gaussian_kernel(
-            self.blocks_per_grid,
-            self.threads_per_block,
-            (
-                self.training_set_representations,
-                self.temp_reps,
-                self.training_set_natoms,
-                atom_nums,
-                self.training_set_nuclear_charges,
-                nuclear_charges,
-                self.sigma,
-                self.ntrain,
-                nmols,
-                self.nfeatures,
-                self.temp_kernel,
-            ),
+        self.inside_kernel(
+            representations,
+            self.training_set_representations,
+            atom_nums,
+            self.training_set_natoms,
+            nuclear_charges,
+            self.training_set_nuclear_charges,
+            self.sigma,
+            out=self.temp_kernel.T[:nmols],
+            blocks_per_grid=self.blocks_per_grid,
+            threads_per_block=self.threads_per_block,
         )
         return CuPyKRRModel.predict_from_kernel(self, nmols=nmols)
 
@@ -151,6 +151,8 @@ class CuPyKRRLocalModel(CuPyKRRModel, KRRLocalModel):
         self.temp_nuclear_charges[:natoms] = cp.asarray(nuclear_charges)[:]
         self.default_na_arr[0] = natoms
         result_gpu = self.predict_from_representations(
-            self.temp_reps, self.temp_nuclear_charges, atom_nums=self.default_na_arr
+            self.temp_reps[:natoms],
+            self.temp_nuclear_charges[:natoms],
+            atom_nums=self.default_na_arr,
         )
         return cp.asnumpy(result_gpu)[0]

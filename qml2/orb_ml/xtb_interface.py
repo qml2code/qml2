@@ -1,9 +1,10 @@
 import os
 import subprocess
+import tempfile
 
 from pyscf.tools import molden
 
-from ..basic_utils import mkdir, mktmpdir, rmdir
+from ..basic_utils import mkdir
 from ..utils import write2file, write_compound_to_xyz_file
 from .aux_classes import PseudoMF
 
@@ -37,7 +38,8 @@ def xtb_output_extract_e_tot(xtb_output):
 
 def generate_pyscf_mf_mol(oml_compound):
     if oml_compound.temp_calc_dir is None:
-        workdir = mktmpdir()
+        tmpdir = tempfile.TemporaryDirectory(dir=".")
+        workdir = tmpdir.name
     else:
         mkdir(oml_compound.temp_calc_dir)
         workdir = oml_compound.temp_calc_dir
@@ -72,6 +74,4 @@ def generate_pyscf_mf_mol(oml_compound):
     pyscf_mol, mo_energy, mo_coeff, mo_occ, _, _ = molden.load(molden_new)
     mf_out = PseudoMF(e_tot=e_tot, mo_energy=mo_energy, mo_coeff=mo_coeff, mo_occ=mo_occ)
     os.chdir("..")
-    if oml_compound.temp_calc_dir is None:
-        rmdir(workdir)
     return mf_out, pyscf_mol

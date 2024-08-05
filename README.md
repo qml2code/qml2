@@ -1,6 +1,6 @@
-# qml2-dev
+# qml2
 
-Code repo for convenient usage of methods developed in the `chemspacelab` group. Successor to `qmlcode/qml` repo that also draws a lot of inspiration from [`qmllib`](https://github.com/qmlcode/qmllib) and [`qml-lightning`](https://github.com/nickjbrowning/qml-lightning) repos.
+Code repo for convenient usage of methods developed in the [`chemspacelab`](https://github.com/chemspacelab) group. Successor to [`qmlcode/qml`](https://github.com/qmlcode/qml) repo that also draws a lot of inspiration from [`qmllib`](https://github.com/qmlcode/qmllib) and [`qml-lightning`](https://github.com/nickjbrowning/qml-lightning) repos.
 
 ## :wrench: Installation
 
@@ -20,7 +20,6 @@ or, if `makefile` is installed,
    pip install pyscf
    ```
 
-
 ## :clipboard: Testing
 
 To check that the installed repo works correctly run
@@ -28,22 +27,8 @@ To check that the installed repo works correctly run
    ```bash
    make test
    ```
-**NOTE:** The command assumes `python` environmental variable pointing towards a valid executable (rather than being, for example, a BASH alias).
+**NOTE:** The command assumes that `python` environmental variable points towards a valid executable. If you use an environment alias change definition of the `python` variable in the beginning of the Makefile.
 
-## :handshake: Contributing
-
-We use several packages to maximize code readability, listed in requirements-dev.txt, hence should you decide to commit make sure you have a conda environment you are prepared to modify. Having, for example, created a fresh conda environment named `qml2dev` with
-
-   ```bash
-   conda create --name qml2dev
-   conda activate qml2dev
-   ```
-one prepares the environment and the pre-commit scripts in the repository with
-
-   ```bash
-   make dev-setup
-   ```
-This allows automatic formatting/readability checks for all code committed.
 
 ## Additional scripts
 
@@ -72,3 +57,22 @@ Apart from the source the code contains the following folders:
 `QML2_SKIP_JIT` - if 1 do not use JIT.
 
 `QML2_SKIP_JIT_FAILURES` - if 1 TorchScript does not terminate when encountering uncompilable part of the code.
+
+## :handshake: Contributing
+
+We use several packages that maximize code readability, listed in `requirements-dev.txt`; hence should you decide to commit make sure you have a conda environment you are prepared to modify. Having, for example, created a fresh conda environment named `qml2dev` with
+
+   ```bash
+   conda create --name qml2dev
+   conda activate qml2dev
+   ```
+one prepares the environment and the pre-commit scripts in the repository with
+
+   ```bash
+   make dev-setup
+   ```
+This allows automatic formatting/readability checks for the committed code. It is also possible to enforce adherence to [Conventional Commits](https://www.conventionalcommits.org/) [format](https://github.com/pvdlg/conventional-changelog-metahub) of commit messages inside your fork with
+
+   ```bash
+   make conventional-commits
+   ```

@@ -8,9 +8,10 @@
 
 import random
 
-import numpy as np
 import pytest
 from conftest import add_checksum_to_dict, compare_or_create, perturbed_xyz_nhatoms_interval
+
+from qml2.jit_interfaces import array_, sqrt_
 
 min_nhatoms = 4
 max_nhatoms = 5
@@ -18,7 +19,7 @@ max_nhatoms = 5
 
 def run_single_FJK_pair_test(pair_name, pair_kwargs, checksums_storage, checksums_rng):
     _ = pytest.importorskip("pyscf")
-    from qml2.orb_ml import OML_Compound, OML_Compound_list, OML_Slater_pair
+    from qml2.orb_ml import OML_Compound, OML_CompoundList, OML_Slater_pair
     from qml2.orb_ml.kernels import gaussian_kernel, gaussian_kernel_symmetric, rep_stddevs
     from qml2.orb_ml.oml_compound import OML_pyscf_calc_params
     from qml2.orb_ml.representations import OML_rep_params
@@ -45,16 +46,16 @@ def run_single_FJK_pair_test(pair_name, pair_kwargs, checksums_storage, checksum
                 xyz=xyz, **comp_param_kwargs, second_oml_comp_kwargs=pair_kwargs
             )
 
-    A_compounds = OML_Compound_list([comp_func(xyz) for xyz in A_xyzs])
-    B_compounds = OML_Compound_list([comp_func(xyz) for xyz in B_xyzs])
+    A_compounds = OML_CompoundList([comp_func(xyz) for xyz in A_xyzs])
+    B_compounds = OML_CompoundList([comp_func(xyz) for xyz in B_xyzs])
 
     rep_param_kwargs = {"rep_params": rep_params}
-    A_compounds.generate_orb_reps(**rep_param_kwargs, fixed_num_threads=1)
-    B_compounds.generate_orb_reps(**rep_param_kwargs, fixed_num_threads=1)
+    A_compounds.generate_orb_reps(**rep_param_kwargs, test_mode=True)
+    B_compounds.generate_orb_reps(**rep_param_kwargs, test_mode=True)
 
     # Calculate sigmas.
     sigmas = rep_stddevs(A_compounds)
-    sigmas *= np.sqrt(float(len(sigmas)))
+    sigmas *= sqrt_(array_(float(len(sigmas))))
     global_sigma = 0.5
 
     for norm in ["l1", "l2"]:
@@ -86,7 +87,7 @@ def test_FJK():
         "HOMO": {"used_orb_type": "HOMO_removed", "calc_type": "UHF"},
         "LUMO": {"used_orb_type": "LUMO_added", "calc_type": "UHF"},
         "charge": {"charge": 1, "calc_type": "UHF"},
-        "spin": {"spin": 2, "calc_type": "UHF"},
+        "spin": {"spin": 2},
     }
     checksums_storage = {}
     checksums_rng = random.Random(1)

@@ -195,37 +195,8 @@ def ispklfile(filename: str):
     return filename[-4:] == ".pkl"
 
 
-def mktmp(directory=False, template=None):
-    extra_args = ()
-    if directory:
-        extra_args = ("-d", *extra_args)
-    if template is not None:
-        extra_args = ("-t", template, *extra_args)
-    return subprocess.check_output(["mktemp", *extra_args, "-p", "."], text=True).rstrip("\n")
-
-
-def mktmpdir(template=None):
-    return mktmp(directory=True, template=template)
-
-
 def mkdir(dir_name):
     try:
         os.mkdir(dir_name)
     except FileExistsError:
         pass
-
-
-def rmdir(dirname):
-    run("rm", "-Rf", dirname)
-
-
-#   A dumb way to run commands without regards for spaces inside them when subprocess.run offers no viable workarounds..
-def execute_string(string):
-    script_name = mktmp()
-    run("chmod", "+x", script_name)
-    script_output = open(script_name, "w")
-    script_output.write("#!/bin/bash\n" + string)
-    script_output.close()
-    run("chmod", "+x", script_name)
-    run("./" + script_name)
-    rmdir(script_name)

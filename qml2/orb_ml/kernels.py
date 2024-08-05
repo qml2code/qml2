@@ -1,4 +1,5 @@
 import itertools
+from typing import Tuple
 
 from numpy import ndarray
 
@@ -7,6 +8,8 @@ from ..jit_interfaces import (
     array_,
     copy_,
     copy_detached_,
+    dint_,
+    dtype_,
     empty_,
     exp_,
     int_,
@@ -20,36 +23,51 @@ from ..jit_interfaces import (
 )
 from ..kernels.kernels import l1_norm_dist, l2_norm_sq_dist
 
+dist_function_dict = {"l1": l1_norm_dist, "l2": l2_norm_sq_dist}
+
+
+def construct_orb_linear_kernel_function(dist_func):
+    @jit_
+    def orb_linear_kernel_function(scalar_reps1, scalar_reps2, weights1, weights2):
+        product = 0.0
+        nreps1 = scalar_reps1.shape[0]
+        nreps2 = scalar_reps2.shape[0]
+        for i1 in range(nreps1):
+            for i2 in range(nreps2):
+                product += (
+                    exp_(-dist_func(scalar_reps1[i1], scalar_reps2[i2]))
+                    * weights1[i1]
+                    * weights2[i2]
+                )
+        return product
+
+    return orb_linear_kernel_function
+
+
+def construct_orb_gaussian_kernel_function(dist_func):
+    orb_linear_kernel_function = construct_orb_linear_kernel_function(dist_func)
+
+    @jit_
+    def orb_gaussian_kernel_function(
+        scalar_reps1, scalar_reps2, weights1, weights2, inv_sq_global_sigma
+    ):
+        linear_product = orb_linear_kernel_function(
+            scalar_reps1,
+            scalar_reps2,
+            weights1,
+            weights2,
+        )
+        return exp_(-(1.0 - linear_product) * inv_sq_global_sigma)
+
+    return orb_gaussian_kernel_function
+
 
 @jit_
-def orb_linear_kernel_function(scalar_reps1, scalar_reps2, weights1, weights2, dist_func):
-    product = 0.0
-    nreps1 = scalar_reps1.shape[0]
-    nreps2 = scalar_reps2.shape[0]
-    for i1 in range(nreps1):
-        for i2 in range(nreps2):
-            product += (
-                exp_(-dist_func(scalar_reps1[i1], scalar_reps2[i2])) * weights1[i1] * weights2[i2]
-            )
-    return product
-
-
-@jit_
-def orb_gaussian_kernel_function(
-    scalar_reps1, scalar_reps2, weights1, weights2, dist_func, inv_sq_global_sigma
-):
-    linear_product = orb_linear_kernel_function(
-        scalar_reps1, scalar_reps2, weights1, weights2, dist_func
-    )
-    return exp_(-(1.0 - linear_product) * inv_sq_global_sigma)
-
-
-@jit_
-def get_lubound_from_ubounds(i, ubounds_arr):
+def get_lubound_from_ubounds(i: int_, ubounds_arr) -> Tuple[int_, int_]:
     if i == 0:
         lbound = 0
     else:
-        lbound = ubounds_arr[i - 1]
+        lbound = int(ubounds_arr[i - 1])
     return lbound, ubounds_arr[i]
 
 
@@ -171,10 +189,9 @@ def construct_mol_mol_kernel_symmetric(orb_kernel_function):
     return mol_mol_kernel_symmetric
 
 
-dist_function_dict = {"l1": l1_norm_dist, "l2": l2_norm_sq_dist}
-orb_kernel_dict = {
-    "gaussian": orb_gaussian_kernel_function,
-    "linear": orb_linear_kernel_function,
+orb_kernel_contructor_dict = {
+    "gaussian": construct_orb_gaussian_kernel_function,
+    "linear": construct_orb_linear_kernel_function,
 }
 kernel_constructor_dict = {
     False: construct_mol_mol_kernel_asymmetric,
@@ -182,8 +199,8 @@ kernel_constructor_dict = {
 }
 
 
-def construct_kernel(orb_product="gaussian", symmetric=False):
-    orb_kernel = orb_kernel_dict[orb_product]
+def construct_kernel(orb_product="gaussian", symmetric=False, norm="l2"):
+    orb_kernel = orb_kernel_contructor_dict[orb_product](dist_function_dict[norm])
     kernel_constructor = kernel_constructor_dict[symmetric]
     return kernel_constructor(orb_kernel)
 
@@ -191,61 +208,79 @@ def construct_kernel(orb_product="gaussian", symmetric=False):
 precompiled_kernels = {}
 
 
-def get_kernel(orb_product="gaussian", symmetric=False):
+def get_kernel(orb_product="gaussian", symmetric=False, norm="l2"):
+    kernel_def_tuple = (orb_product, norm)
     if symmetric not in precompiled_kernels:
         precompiled_kernels[symmetric] = {}
-    if orb_product not in precompiled_kernels[symmetric]:
-        precompiled_kernels[symmetric][orb_product] = construct_kernel(
-            orb_product=orb_product, symmetric=symmetric
+    if kernel_def_tuple not in precompiled_kernels[symmetric]:
+        precompiled_kernels[symmetric][kernel_def_tuple] = construct_kernel(
+            orb_product=orb_product, symmetric=symmetric, norm=norm
         )
-    return precompiled_kernels[symmetric][orb_product]
+    return precompiled_kernels[symmetric][kernel_def_tuple]
 
 
 # For preparing temporary arrays for kernel calculation.
-@jit_
-def normalize_orb_scalar_rep_weights(scalar_reps, rep_weights, dist_func):
-    sq_norm = orb_linear_kernel_function(
-        scalar_reps, scalar_reps, rep_weights, rep_weights, dist_func
-    )
-    norm_mult = sqrt_(sq_norm) ** (-1)
-    rep_weights *= norm_mult
+def construct_weight_normalization(dist_func):
+    orb_linear_kernel_function = construct_orb_linear_kernel_function(dist_func)
 
-
-@jit_
-def normalize_mol_scalar_rep_weights(scalar_reps, rep_weights, orb_rep_ubounds, dist_func):
-    norbs = orb_rep_ubounds.shape[0]
-    for i_orb in range(norbs):
-        lbound_orb, ubound_orb = get_lubound_from_ubounds(i_orb, orb_rep_ubounds)
-        normalize_orb_scalar_rep_weights(
-            scalar_reps[lbound_orb:ubound_orb],
-            rep_weights[lbound_orb:ubound_orb],
-            dist_func,
+    @jit_
+    def normalize_orb_scalar_rep_weights(
+        scalar_reps,
+        rep_weights,
+    ):
+        sq_norm = orb_linear_kernel_function(
+            scalar_reps,
+            scalar_reps,
+            rep_weights,
+            rep_weights,
         )
+        norm_mult = sqrt_(sq_norm) ** (-1)
+        rep_weights *= norm_mult
+
+    @jit_
+    def normalize_mol_scalar_rep_weights(scalar_reps, rep_weights, orb_rep_ubounds):
+        norbs = orb_rep_ubounds.shape[0]
+        for i_orb in range(norbs):
+            lbound_orb, ubound_orb = get_lubound_from_ubounds(i_orb, orb_rep_ubounds)
+            normalize_orb_scalar_rep_weights(
+                scalar_reps[lbound_orb:ubound_orb],
+                rep_weights[lbound_orb:ubound_orb],
+            )
+
+    @jit_(numba_parallel=True)
+    def normalize_all_mol_scalar_rep_weights(
+        mol_scalar_reps,
+        rep_weights,
+        mol_orb_ubounds,
+        mol_rep_ubounds,
+        orb_rep_ubounds,
+    ):
+        nmols = mol_rep_ubounds.shape[0]
+        for i_mol in prange_(nmols):
+            lbound_orb, ubound_orb = get_lubound_from_ubounds(i_mol, mol_orb_ubounds)
+            lbound_rep, ubound_rep = get_lubound_from_ubounds(i_mol, mol_rep_ubounds)
+            normalize_mol_scalar_rep_weights(
+                mol_scalar_reps[lbound_rep:ubound_rep],
+                rep_weights[lbound_rep:ubound_rep],
+                orb_rep_ubounds[lbound_orb:ubound_orb],
+            )
+
+    return normalize_all_mol_scalar_rep_weights
+
+
+weight_normalizations = {}
+
+
+def get_weight_normalization(norm):
+    global weight_normalizations
+    if norm not in weight_normalizations:
+        dist_func = dist_function_dict[norm]
+        weight_normalizations[norm] = construct_weight_normalization(dist_func)
+    return weight_normalizations[norm]
 
 
 @jit_(numba_parallel=True)
-def normalize_all_mol_scalar_rep_weights(
-    mol_scalar_reps,
-    rep_weights,
-    mol_orb_ubounds,
-    mol_rep_ubounds,
-    orb_rep_ubounds,
-    dist_func,
-):
-    nmols = mol_rep_ubounds.shape[0]
-    for i_mol in prange_(nmols):
-        lbound_orb, ubound_orb = get_lubound_from_ubounds(i_mol, mol_orb_ubounds)
-        lbound_rep, ubound_rep = get_lubound_from_ubounds(i_mol, mol_rep_ubounds)
-        normalize_mol_scalar_rep_weights(
-            mol_scalar_reps[lbound_rep:ubound_rep],
-            rep_weights[lbound_rep:ubound_rep],
-            orb_rep_ubounds[lbound_orb:ubound_orb],
-            dist_func,
-        )
-
-
-@jit_(numba_parallel=True)
-def rescale_scalar_reps(mol_scalar_reps, sigmas, add_multiplier):
+def rescale_scalar_reps(mol_scalar_reps, sigmas, add_multiplier: float):
     # K.Karandashev: wrote this assuming * is faster than /, but not %100 sure how it's with current NumBa.
     inv_sigmas = add_multiplier / sigmas
     for rep_id in prange_(mol_scalar_reps.shape[0]):
@@ -314,25 +349,24 @@ class OML_KernelInput:
         self.mol_rep_ubounds = array_(self.mol_rep_ubounds)
         self.orb_rep_ubounds = array_(self.orb_rep_ubounds)
 
-    def init_temp_arrs(self, sigmas, dist_func, norm="l2"):
+    def init_temp_arrs(self, sigmas, norm="l2"):
         if (self.temp_arrs_initialized_for is not None) and (
-            self.temp_arrs_initialized_for == dist_func
+            self.temp_arrs_initialized_for == norm
         ):
             return
         assert all(sigmas > 0.0)
-        self.temp_arrs_initialized_for = dist_func
+        self.temp_arrs_initialized_for = norm
         if norm == "l2":
             add_multiplier = 0.5
         else:
             add_multiplier = 1.0
         rescale_scalar_reps(self.scalar_reps, sigmas, add_multiplier)
-        normalize_all_mol_scalar_rep_weights(
+        get_weight_normalization(norm)(
             self.scalar_reps,
             self.arep_weights,
             self.mol_orb_ubounds,
             self.mol_rep_ubounds,
             self.orb_rep_ubounds,
-            dist_func,
         )
 
 
@@ -343,19 +377,18 @@ def kernel_from_processed_input(
     global_sigma: float = None,
     norm: str = "l2",
 ):
-    dist_func = dist_function_dict[norm]
-    A_input.init_temp_arrs(sigmas, dist_func, norm=norm)
+    A_input.init_temp_arrs(sigmas, norm=norm)
     symmetric = B_input is None
     if not symmetric:
-        B_input.init_temp_arrs(sigmas, dist_func)
+        B_input.init_temp_arrs(sigmas, norm=norm)
     if global_sigma is None:
         orb_product = "linear"
-        kernel_args = (dist_func,)
+        kernel_args = ()
     else:
         orb_product = "gaussian"
         inv_sq_sigma = global_sigma ** (-2)
-        kernel_args = (dist_func, inv_sq_sigma)
-    kernel_func = get_kernel(orb_product=orb_product, symmetric=symmetric)
+        kernel_args = (inv_sq_sigma,)
+    kernel_func = get_kernel(orb_product=orb_product, symmetric=symmetric, norm=norm)
     if symmetric:
         return kernel_func(
             A_input.scalar_reps,
@@ -447,6 +480,7 @@ def find_vec_moments(
     mol_rep_ubounds,
     orb_rep_ubounds,
     moments,
+    dint_: dtype_ = dint_,
 ):
     nmols = mol_rep_ubounds.shape[0]
     nmoments = moments.shape[0]
@@ -454,7 +488,7 @@ def find_vec_moments(
     mol_vec_moments = empty_((nmols, nmoments * repsize))
     mol_moment_norm = empty_((nmols,))
 
-    moment_ubounds = empty_((nmoments,), dtype=int_)
+    moment_ubounds = empty_((nmoments,), dtype=dint_)
     for mom_id in range(nmoments):
         moment_ubounds[mom_id] = (mom_id + 1) * repsize
 

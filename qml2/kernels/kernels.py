@@ -1,11 +1,76 @@
 """
+Expressions for calculating Gaussian, Laplacian, and Matern kernels, both local and global.
+
+# Kernel types.
+
+For a kernel function named ${kf_name} (\\in ["gaussian", "laplacian", "matern"]) corresponding to function $F$ we have defined:
+
+${kf_name}_kernel(A, B, sigma, out=None, **kwargs):
+    calculate matrix K such that
+        K_{ij}=F(A_{i}, B_{j}, sigma, **kwargs)
+    Arguments:
+    A, B - arrays or *global* representation vectors of length corresponding to number of molecules in A and B (A_nmols and B_nmols).
+    sigma - float of sigma value or 1D array of sigma values length nsigmas.
+    out - if not None the array will be used for kernel output.
+    **kwargs - see "Implemented $F$ options"
+    Output:
+    If sigma is float return matrix K of dimensionality A_nmols x B_nmols.
+    If sigma is 1D array return tensor K of dimensionality A_nmols x B_nmols x nsigmas, with
+    K_{ijk} corresponding to K_{ij} calculated for sigma_{k}.
+
+${kf_name}_kernel_symmetric(A, sigma, **kwargs):
+    returns ${kf_name}_kernel(A, A, sigma, **kwargs)
+
+local_${kf_name}_kernel(A, B, A_natoms, B_natoms, sigma, out=None, **kwargs):
+    calculate matrix K such that
+        K_{ij}=\\sum_{ij}\\sum_{k=1}^{Na_{i}}\\sum_{l=1}^{Nb_{j}}F(A_{ik}, B_{jl}, sigma, **kwargs)
+    where A_{ik}, B_{jl} are representations vectors of atoms k and l in molecules A_{i} and B_{j}, Na_{i} and
+    Nb_{j} are numbers of atoms in molecules A_{i} and B_{j}
+
+    Arguments:
+    A, B - 2D arrays of *local* representation vectors of molecules concatenated (e.g. via numpy.concatenate) together.
+    A_natoms, B_natoms - 1D integer arrays of number of atoms for each molecule.
+    sigma, out - same as in ${kf_name}_kernel
+
+    Output:
+    same as in ${kf_name}_kernel
+
+local_${kf_name}_kernel_symmetric(A, A_natoms, sigma, **kwargs):
+    returns local_${kf_name}_kernel(A, A, A_natoms, A_natoms, sigma, **kwargs)
+
+local_dn_${kf_name}_kernel(A, B, A_natoms, B_natoms, A_ncharges, B_ncharges, out=None, **kwargs):
+    calculate matrix K such that
+        K_{ij}=\\sum_{ij}\\sum_{k=1}^{{A_natoms}_{i}}\\sum_{l=1}^{{B_natoms}_{j}}F(A_{ik}, B_{jl}, sigma, **kwargs) \\delta(Nca_{ik}-Ncb_{jl})
+    where \\delta is the delta function, Nca_{ik} and Ncb_{jl} are nuclear charges of atoms k and l in molecules i and j.
+
+    Arguments:
+    A, B, A_natoms, B_natoms, sigma, out - same as local_${kf_name}_kernel.
+    A_ncharges, B_ncharges - concatenated (e.g. via numpy.concatenate) nuclear charges arrays of individual molecules.
+
+local_dn_${kf_name}_kernel_symmetric(A, A_natoms, A_ncharges, sigma, **kwargs):
+    returns local_dn_${kf_name}_kernel(A, A, A_natoms, A_natoms, A_ncharges, A_ncharges, sigma, **kwargs)
+
+# Implemented $F$ options
+
+- Gaussian:
+    F(X1, X2)=exp((X1-X2)**2/2/sigma**2)
+- Laplacian:
+    F(X1, X2)=exp(\\sum_{k}|X1_{k}-X2_{k}|/sigma)
+- Matern:
+    F(X1, X2) depends on the distance r(X1, X2), which, depending on the
+    `metric` keyword set during the kernel calculation, can be L1 ("l1") or L2 ("l2").
+    The `order` keyword for each kernel calculation determines order of the Matern kernel.
+    The implemented values are (writing $rs=r(X1, X2)/sigma$ for short):
+        -0:
+            F(X1, X2, sigma)=exp(-rs)
+        -1:
+            F(X1, X2, sigma)=exp(-rs*sqrt(3))*(1+sqrt(3)*rs)
+        -2:
+            F(X1, X2, sigma)=exp(-rs*sqrt(5))*(1+sqrt(5)*rs+5*rs**2/3)
 COMMENT: Konstantin Karandashev:
 The precompiled function variables are seeminly the best way to capitalize on Python's polymorphism while avoiding
 calls on functions as arguments (they seem to slow the code down a bit). There would be better ways to write this when jitclass moves out of
 experimental and starts supporting __call__.
-2024.04.09: 1. turns out there is the added benefit of making Torch use seemless.
-            2. possibility to do calculations for different sigmas were added
-                last-minute, hence perhaps confusing code.
 """
 from ..jit_interfaces import (
     constr_dfloat_,
@@ -166,12 +231,12 @@ def construct_local_kernel_asymmetric(
     )
 
     @jit_(numba_parallel=True)
-    def local_kernel_asymmetric(A, B, na, nb, sigma, output_kernel):
+    def local_kernel_asymmetric(A, B, A_natoms, B_natoms, sigma, output_kernel):
         sigma_param = sigma_to_param(sigma)
-        nmols_A = na.shape[0]
-        nmols_B = nb.shape[0]
-        ubound_arr_A = get_atom_environment_ranges(na)
-        ubound_arr_B = get_atom_environment_ranges(nb)
+        nmols_A = A_natoms.shape[0]
+        nmols_B = B_natoms.shape[0]
+        ubound_arr_A = get_atom_environment_ranges(A_natoms)
+        ubound_arr_B = get_atom_environment_ranges(B_natoms)
 
         for i in prange_(nmols_A):
             A_rep_subarray = A[ubound_arr_A[i] : ubound_arr_A[i + 1]]
@@ -191,10 +256,10 @@ def construct_local_kernel_symmetric(
     )
 
     @jit_(numba_parallel=True)
-    def local_kernel_symmetric(A, na, sigma, output_kernel):
+    def local_kernel_symmetric(A, A_natoms, sigma, output_kernel):
         sigma_param = sigma_to_param(sigma)
-        nmols_A = na.shape[0]
-        ubound_arr_A = get_atom_environment_ranges(na)
+        nmols_A = A_natoms.shape[0]
+        ubound_arr_A = get_atom_environment_ranges(A_natoms)
 
         for i in prange_(nmols_A):
             A_rep_subarray = A[ubound_arr_A[i] : ubound_arr_A[i + 1]]
@@ -232,12 +297,14 @@ def construct_local_dn_kernel_asymmetric(
     )
 
     @jit_(numba_parallel=True)
-    def local_dn_kernel_asymmetric(A, B, na, nb, A_ncharges, B_ncharges, sigma, output_kernel):
+    def local_dn_kernel_asymmetric(
+        A, B, A_natoms, B_natoms, A_ncharges, B_ncharges, sigma, output_kernel
+    ):
         sigma_param = sigma_to_param(sigma)
-        nmols_A = na.shape[0]
-        nmols_B = nb.shape[0]
-        ubound_arr_A = get_atom_environment_ranges(na)
-        ubound_arr_B = get_atom_environment_ranges(nb)
+        nmols_A = A_natoms.shape[0]
+        nmols_B = B_natoms.shape[0]
+        ubound_arr_A = get_atom_environment_ranges(A_natoms)
+        ubound_arr_B = get_atom_environment_ranges(B_natoms)
 
         for i in prange_(nmols_A):
             A_rep_subarray = A[ubound_arr_A[i] : ubound_arr_A[i + 1]]
@@ -262,10 +329,10 @@ def construct_local_dn_kernel_symmetric(
     )
 
     @jit_(numba_parallel=True)
-    def local_dn_kernel_symmetric(A, na, A_ncharges, sigma, output_kernel):
+    def local_dn_kernel_symmetric(A, A_natoms, A_ncharges, sigma, output_kernel):
         sigma_param = sigma_to_param(sigma)
-        nmols_A = na.shape[0]
-        ubound_arr_A = get_atom_environment_ranges(na)
+        nmols_A = A_natoms.shape[0]
+        ubound_arr_A = get_atom_environment_ranges(A_natoms)
 
         for i in prange_(nmols_A):
             A_rep_subarray = A[ubound_arr_A[i] : ubound_arr_A[i + 1]]
@@ -416,7 +483,9 @@ def get_kernel(
             return precomp_kernel_dict[many_sigmas][symmetric][local]
 
 
-def allocate_kernel(A: ndarray_, B: ndarray_, sigma: ndarray_ | float_):
+def allocate_kernel(
+    A: ndarray_, B: ndarray_, sigma: ndarray_ | float_, out: ndarray_ | None = None
+):
     nA = A.shape[0]
     if B is None:
         nB = nA
@@ -428,12 +497,20 @@ def allocate_kernel(A: ndarray_, B: ndarray_, sigma: ndarray_ | float_):
     else:
         many_sigmas = sigma.shape[0]
         new_shape = (*new_shape, sigma.shape[0])
-    return empty_(new_shape), many_sigmas
+    if out is None:
+        return empty_(new_shape), many_sigmas
+    else:
+        assert (
+            new_shape == out.shape
+        ), "ERROR: mismatch in dimensions of desired kernel output and the one provided in the `out` keyword."
+        return out
 
 
-def calculate_global_kernel(A, B, sigma, precompiled_kernel_dictionnary, **get_kernel_kwargs):
+def calculate_global_kernel(
+    A, B, sigma, precompiled_kernel_dictionnary, out=None, **get_kernel_kwargs
+):
     symmetric = B is None
-    kernel_output, many_sigmas = allocate_kernel(A, B, sigma)
+    kernel_output, many_sigmas = allocate_kernel(A, B, sigma, out=out)
     kernel = get_kernel(
         precompiled_kernel_dictionnary,
         symmetric=symmetric,
@@ -448,10 +525,10 @@ def calculate_global_kernel(A, B, sigma, precompiled_kernel_dictionnary, **get_k
 
 
 def calculate_local_kernel(
-    A, B, na, nb, sigma, precompiled_kernel_dictionnary, **get_kernel_kwargs
+    A, B, A_natoms, B_natoms, sigma, precompiled_kernel_dictionnary, out=None, **get_kernel_kwargs
 ):
     symmetric = B is None
-    kernel_output, many_sigmas = allocate_kernel(na, nb, sigma)
+    kernel_output, many_sigmas = allocate_kernel(A_natoms, B_natoms, sigma, out=out)
     kernel = get_kernel(
         precompiled_kernel_dictionnary,
         symmetric=symmetric,
@@ -460,25 +537,26 @@ def calculate_local_kernel(
         **get_kernel_kwargs,
     )
     if symmetric:
-        kernel(A, na, sigma, kernel_output)
+        kernel(A, A_natoms, sigma, kernel_output)
     else:
-        kernel(A, B, na, nb, sigma, kernel_output)
+        kernel(A, B, A_natoms, B_natoms, sigma, kernel_output)
     return kernel_output
 
 
 def calculate_local_dn_kernel(
     A,
     B,
-    na,
-    nb,
+    A_natoms,
+    B_natoms,
     A_ncharges,
     B_ncharges,
     sigma,
     precompiled_kernel_dictionnary,
+    out=None,
     **get_kernel_kwargs,
 ):
     symmetric = B is None
-    kernel_output, many_sigmas = allocate_kernel(na, nb, sigma)
+    kernel_output, many_sigmas = allocate_kernel(A_natoms, B_natoms, sigma, out=out)
     kernel = get_kernel(
         precompiled_kernel_dictionnary,
         symmetric=symmetric,
@@ -488,9 +566,9 @@ def calculate_local_dn_kernel(
         **get_kernel_kwargs,
     )
     if symmetric:
-        kernel(A, na, A_ncharges, sigma, kernel_output)
+        kernel(A, A_natoms, A_ncharges, sigma, kernel_output)
     else:
-        kernel(A, B, na, nb, A_ncharges, B_ncharges, sigma, kernel_output)
+        kernel(A, B, A_natoms, B_natoms, A_ncharges, B_ncharges, sigma, kernel_output)
     return kernel_output
 
 
@@ -501,51 +579,60 @@ precompiled_laplacian_kernels = {}
 laplacian_kernel_specifics = {}  # this is the default kernel
 
 
-def laplacian_kernel(A, B, sigma):
-    return calculate_global_kernel(A, B, sigma, precompiled_laplacian_kernels)
+def laplacian_kernel(A, B, sigma, out=None):
+    return calculate_global_kernel(A, B, sigma, precompiled_laplacian_kernels, out=out)
 
 
-def laplacian_kernel_symmetric(A, sigma):
-    return laplacian_kernel(A, None, sigma)
+def laplacian_kernel_symmetric(A, sigma, out=None):
+    return laplacian_kernel(A, None, sigma, out=out)
 
 
-def local_laplacian_kernel(A, B, na, nb, sigma):
-    return calculate_local_kernel(A, B, na, nb, sigma, precompiled_laplacian_kernels)
+def local_laplacian_kernel(A, B, A_natoms, B_natoms, sigma, out=None):
+    return calculate_local_kernel(
+        A, B, A_natoms, B_natoms, sigma, precompiled_laplacian_kernels, out=out
+    )
 
 
-def local_laplacian_kernel_symmetric(A, na, sigma):
-    return local_laplacian_kernel(A, None, na, None, sigma)
+def local_laplacian_kernel_symmetric(A, A_natoms, sigma, out=None):
+    return local_laplacian_kernel(A, None, A_natoms, None, sigma, out=out)
 
 
 precompiled_gaussian_kernels = {}
 gaussian_kernel_specifics = {"metric": "l2", "sigma_to_param": half_inv_sq_sigma}
 
 
-def gaussian_kernel(A, B, sigma):
+def gaussian_kernel(A, B, sigma, out=None):
     return calculate_global_kernel(
-        A, B, sigma, precompiled_gaussian_kernels, **gaussian_kernel_specifics
+        A, B, sigma, precompiled_gaussian_kernels, out=out, **gaussian_kernel_specifics
     )
 
 
-def gaussian_kernel_symmetric(A, sigma):
-    return gaussian_kernel(A, None, sigma)
+def gaussian_kernel_symmetric(A, sigma, out=None):
+    return gaussian_kernel(A, None, sigma, out=out)
 
 
-def local_gaussian_kernel(A, B, na, nb, sigma):
+def local_gaussian_kernel(A, B, A_natoms, B_natoms, sigma, out=None):
     return calculate_local_kernel(
-        A, B, na, nb, sigma, precompiled_gaussian_kernels, **gaussian_kernel_specifics
+        A,
+        B,
+        A_natoms,
+        B_natoms,
+        sigma,
+        precompiled_gaussian_kernels,
+        out=out,
+        **gaussian_kernel_specifics,
     )
 
 
-def local_gaussian_kernel_symmetric(A, na, sigma):
-    return local_gaussian_kernel(A, None, na, None, sigma)
+def local_gaussian_kernel_symmetric(A, A_natoms, sigma, out=None):
+    return local_gaussian_kernel(A, None, A_natoms, None, sigma, out=out)
 
 
 precompiled_matern_kernels = {}
 matern_kernel_specifics = {"type": "Matern"}
 
 
-def matern_kernel(A, B, sigma, order=0, metric="l1"):
+def matern_kernel(A, B, sigma, order=0, metric="l1", out=None):
     return calculate_global_kernel(
         A,
         B,
@@ -553,6 +640,7 @@ def matern_kernel(A, B, sigma, order=0, metric="l1"):
         precompiled_matern_kernels,
         order=order,
         metric=metric,
+        out=out,
         **matern_kernel_specifics,
     )
 
@@ -561,71 +649,84 @@ def matern_kernel_symmetric(A, sigma, **kwargs):
     return matern_kernel(A, None, sigma, **kwargs)
 
 
-def local_matern_kernel(A, B, na, nb, sigma, order=0, metric="l1"):
+def local_matern_kernel(A, B, A_natoms, B_natoms, sigma, order=0, metric="l1", out=None):
     return calculate_local_kernel(
         A,
         B,
-        na,
-        nb,
+        A_natoms,
+        B_natoms,
         sigma,
         precompiled_matern_kernels,
         order=order,
         metric=metric,
+        out=out,
         **matern_kernel_specifics,
     )
 
 
-def local_matern_kernel_symmetric(A, na, sigma, **kwargs):
-    return local_matern_kernel(A, None, na, None, sigma, **kwargs)
+def local_matern_kernel_symmetric(A, A_natoms, sigma, **kwargs):
+    return local_matern_kernel(A, None, A_natoms, None, sigma, **kwargs)
 
 
 # Local kernels with delta(n1-n2).
-def local_dn_laplacian_kernel(A, B, na, nb, A_ncharges, B_ncharges, sigma):
-    return calculate_local_dn_kernel(
-        A, B, na, nb, A_ncharges, B_ncharges, sigma, precompiled_laplacian_kernels
-    )
-
-
-def local_dn_laplacian_kernel_symmetric(A, na, A_ncharges, sigma):
-    return local_dn_laplacian_kernel(A, None, na, None, A_ncharges, None, sigma)
-
-
-def local_dn_gaussian_kernel(A, B, na, nb, A_ncharges, B_ncharges, sigma):
+def local_dn_laplacian_kernel(A, B, A_natoms, B_natoms, A_ncharges, B_ncharges, sigma, out=None):
     return calculate_local_dn_kernel(
         A,
         B,
-        na,
-        nb,
+        A_natoms,
+        B_natoms,
+        A_ncharges,
+        B_ncharges,
+        sigma,
+        precompiled_laplacian_kernels,
+        out=out,
+    )
+
+
+def local_dn_laplacian_kernel_symmetric(A, A_natoms, A_ncharges, sigma, out=None):
+    return local_dn_laplacian_kernel(A, None, A_natoms, None, A_ncharges, None, sigma, out=out)
+
+
+def local_dn_gaussian_kernel(A, B, A_natoms, B_natoms, A_ncharges, B_ncharges, sigma, out=None):
+    return calculate_local_dn_kernel(
+        A,
+        B,
+        A_natoms,
+        B_natoms,
         A_ncharges,
         B_ncharges,
         sigma,
         precompiled_gaussian_kernels,
+        out=out,
         **gaussian_kernel_specifics,
     )
 
 
-def local_dn_gaussian_kernel_symmetric(A, na, A_ncharges, sigma):
-    return local_dn_gaussian_kernel(A, None, na, None, A_ncharges, None, sigma)
+def local_dn_gaussian_kernel_symmetric(A, A_natoms, A_ncharges, sigma, out=None):
+    return local_dn_gaussian_kernel(A, None, A_natoms, None, A_ncharges, None, sigma, out=out)
 
 
-def local_dn_matern_kernel(A, B, na, nb, A_ncharges, B_ncharges, sigma, order=0, metric="l1"):
+def local_dn_matern_kernel(
+    A, B, A_natoms, B_natoms, A_ncharges, B_ncharges, sigma, order=0, metric="l1", out=None
+):
     return calculate_local_dn_kernel(
         A,
         B,
-        na,
-        nb,
+        A_natoms,
+        B_natoms,
         A_ncharges,
         B_ncharges,
         sigma,
         precompiled_matern_kernels,
+        out=out,
         order=order,
         metric=metric,
         **matern_kernel_specifics,
     )
 
 
-def local_dn_matern_kernel_symmetric(A, na, A_ncharges, sigma, **kwargs):
-    return local_dn_matern_kernel(A, None, na, None, A_ncharges, None, sigma, **kwargs)
+def local_dn_matern_kernel_symmetric(A, A_natoms, A_ncharges, sigma, **kwargs):
+    return local_dn_matern_kernel(A, None, A_natoms, None, A_ncharges, None, sigma, **kwargs)
 
 
 # KK: introduced for making it easier to get symmetric and asymmetric versions of the same kernel

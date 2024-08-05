@@ -1,13 +1,17 @@
 from ..jit_interfaces import (
+    abs_,
     all_,
     any_,
+    arccos_,
     bool_,
     constr_dfloat_,
     constr_dint_,
     constr_int_,
     copy_,
+    cross_,
     dbool_,
     dint_,
+    dot_,
     dtype_,
     empty_,
     float_,
@@ -19,6 +23,8 @@ from ..jit_interfaces import (
     min_,
     ndarray_,
     ones_,
+    optional_ndarray_,
+    pi_,
     prange_,
     repeat_,
     save_,
@@ -128,10 +134,13 @@ def extend_for_pbc(
     element_types: ndarray_,
     natoms: int_,
     rcut: float_,
-    cell: ndarray_,
+    cell: optional_ndarray_,
     dint_: dtype_ = dint_,
     dbool_: dtype_ = dbool_,
 ) -> tuple[ndarray_, ndarray_, int_, ndarray_]:
+    if cell is None:
+        raise Exception
+
     # Cartesian space dimensionality.
     ndim = coordinates.shape[1]
     # Normalized directions corresponding to different cells.
@@ -316,3 +325,58 @@ def calculate_distances_wrcut(
     symmetrize_neighbor_ids(neighbor_ids, num_neighbors, natoms)
     symmetrize_sparse_matrix(distances, neighbor_ids, num_neighbors, natoms)
     return distances, neighbor_ids, num_neighbors
+
+
+# Calculate all diahedral angles.
+@jit_(numba_parallel=True)
+def calculate_dihedral_angles(coords):
+    """
+    For tensor element with indices i,j,k,l, stores angle between the triangle i,j,k
+    and i,j,l.
+    """
+    # K.Karan: Could be optimized a bit by, for example, storing at i,i,k,l
+    # K.Karan.: I think that the extra cost of calculating cross-products more than once should be often
+    # less noticeable than the extra cost of allocating and deallocating the space to store them.
+    # Hence I only store their norms for later reuse.
+    size = coords.shape[0]
+    all_angles = zeros_((size, size, size, size))
+    # First calculate everything needed for cross-product normalization
+    for i in prange_(size):
+        for j in range(size):
+            if j == i:
+                continue
+            v0 = coords[j] - coords[i]
+            for k in range(j):
+                if k == i:
+                    continue
+                cross_prod = cross_(v0, coords[k] - coords[i])
+                all_angles[i, i, j, k] = l2_norm_(cross_prod)
+                all_angles[i, i, k, j] = all_angles[i, i, j, k]
+
+    # Now calculate the angles.
+    for i in prange_(size):
+        for j in range(i):
+            v0 = coords[j] - coords[i]
+            for k in range(size):
+                if (k == i) or (k == j):
+                    continue
+                norm_cross_prod1 = cross_(v0, coords[k] - coords[i]) / all_angles[i, i, j, k]
+                for l in range(k):
+                    if (l == i) or (l == j):
+                        continue
+                    norm_cross_prod2 = cross_(v0, coords[l] - coords[i]) / all_angles[i, i, j, l]
+                    product = dot_(norm_cross_prod1, norm_cross_prod2)
+                    if abs_(product) > 1.0:
+                        if product > 0.0:
+                            angle = 0.0
+                        else:
+                            angle = pi_
+                    else:
+                        angle = arccos_(product)
+                    all_angles[i, j, k, l] = angle
+                    all_angles[j, i, k, l] = angle
+                    all_angles[i, j, l, k] = angle
+                    all_angles[j, i, l, k] = angle
+    for i in prange_(size):
+        all_angles[i, i, :, :] = 0.0
+    return all_angles

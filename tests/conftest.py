@@ -2,12 +2,14 @@
 import glob
 import itertools
 import os
+import random
 import tarfile
 
-import numpy as np
+from numba import njit
 
 from qml2.basic_utils import mkdir
 from qml2.compound import Compound
+from qml2.jit_interfaces import abs_, array_, dint_, empty_, max_, prod_, sign_, sum_, zeros_
 from qml2.utils import all_possible_indices, read_xyz_file, write_compound_to_xyz_file
 
 # For creating "perturbed" QM7 files.
@@ -27,10 +29,29 @@ perturbed_xyz_dir = test_dir + "/test_data/perturbed_qm7"
 xyz_perturbation_magnitude = 1e-6
 
 
+def str2rng(s):
+    return random.Random(int.from_bytes(bytes(s, "utf-8")))
+
+
+# Procedures analogous to Numpy that do not depend on Numpy/Torch random number generator.
+def randint_arr(lbound, ubound, shape, rng):
+    output = empty_(shape, dtype=dint_)
+    for i in all_possible_indices(shape):
+        output[i] = rng.randint(lbound, ubound)
+    return output
+
+
+def random_arr(shape, rng):
+    output = empty_(shape)
+    for i in all_possible_indices(shape):
+        output[i] = rng.random()
+    return output
+
+
 def check_perturbed_coordinates_existence(perturbed_xyz_dir=perturbed_xyz_dir, seed=1):
     if os.path.isdir(perturbed_xyz_dir):
         return
-    rng = np.random.default_rng(seed)
+    rng = random.Random(seed)
     mkdir(perturbed_xyz_dir)
 
     tar_input = tarfile.open(original_xyz_tar)
@@ -41,7 +62,7 @@ def check_perturbed_coordinates_existence(perturbed_xyz_dir=perturbed_xyz_dir, s
         cur_comp = Compound(xyz=xyz)
         short_xyz_name = os.path.basename(xyz_name)
         cur_comp.coordinates += xyz_perturbation_magnitude * (
-            rng.random(cur_comp.coordinates.shape) - 0.5
+            random_arr(cur_comp.coordinates.shape, rng) - 0.5
         )
         write_compound_to_xyz_file(cur_comp, perturbed_xyz_dir + "/" + short_xyz_name)
 
@@ -70,7 +91,7 @@ def perturbed_xyz_examples(rng, nxyzs, seed=1):
 
 def xyz_nhatoms(xyz):
     nuclear_charges, _, _, _ = read_xyz_file(xyz)
-    return np.sum(nuclear_charges != 1)
+    return sum_(nuclear_charges != 1)
 
 
 def perturbed_xyz_nhatoms_interval(min_nhatoms, max_nhatoms, seed=1):
@@ -87,24 +108,30 @@ def perturbed_xyz_nhatoms_interval(min_nhatoms, max_nhatoms, seed=1):
 
 
 # KK: storing entire arrays can become very wasteful, hence subroutines for creating random checksums of arrays.
-
-int_dtypes = [np.dtype(np.int64), np.dtype(np.int32)]
-
-float_dtypes = [np.dtype(np.float64), np.dtype(np.float32)]
-
-
 float_format = "{:.12E}"
 
 
-def randomly_change_sign(val, rng):
-    output = val
-    if rng.random() > 0.5:
-        output *= -1
-    return output
+# A function which is close to randomly changing sign of an entry,
+# but is continuous w.r.t. RNG output.
+@njit(fastmath=True)
+def unsigned_polynom(r):
+    return 16 * r**4 - 1
+
+
+@njit(fastmath=True)
+def random_phase(r_in):
+    if r_in <= 0.5:
+        return unsigned_polynom(r_in)
+    else:
+        return -unsigned_polynom(1.0 - r_in)
+
+
+def randomly_assign_phase(val, rng):
+    return val * random_phase(rng.random())
 
 
 def get_stack_1dim_bounds(nstacks_1dim, arr_dim):
-    output = np.empty((nstacks_1dim + 1,), dtype=int)
+    output = empty_((nstacks_1dim + 1,), dtype=dint_)
     base_size = arr_dim // nstacks_1dim
     remainder = arr_dim % nstacks_1dim
     output[0] = 0
@@ -131,15 +158,15 @@ def create_checksums(arr, rng, nstack_checksums=1, stacks=1):
     arr_dim = len(arr_shape)
     if not isinstance(stacks, tuple):
         stacks = (stacks,)
-    tot_checksum_num = np.prod(stacks) * nstack_checksums
-    checksums = np.zeros((tot_checksum_num,), dtype=arr.dtype)
+    tot_checksum_num = prod_(stacks) * nstack_checksums
+    checksums = zeros_((tot_checksum_num,), dtype=arr.dtype)
 
     if arr_dim > len(stacks):
         stacks = (*stacks, *[1 for _ in range(arr_dim - len(stacks))])
-    stack_sizes = np.empty(
+    stack_sizes = empty_(
         (arr_dim,),
     )
-    stack_size_remainders = np.empty(
+    stack_size_remainders = empty_(
         (arr_dim,),
     )
     for dim_id, st in enumerate(stacks):
@@ -157,18 +184,10 @@ def create_checksums(arr, rng, nstack_checksums=1, stacks=1):
             val = arr[poss_id]
             checksums[stack_checksums_lb] += val
             for i in range(1, nstack_checksums):
-                checksums[stack_checksums_lb + i] += randomly_change_sign(val, rng)
+                checksums[stack_checksums_lb + i] += randomly_assign_phase(val, rng)
         stack_checksums_lb += nstack_checksums
 
     return checksums
-
-
-def format_by_dtype(arr_el, arr_dtype):
-    if arr_dtype in int_dtypes:
-        return str(arr_el)
-    if arr_dtype in float_dtypes:
-        return float_format.format(arr_el)
-    raise Exception
 
 
 def read_all_checksums(benchmark_name):
@@ -185,19 +204,14 @@ def read_all_checksums(benchmark_name):
                 assert arr_name == lsplit[1]
                 continue
             arr_name = lsplit[1]
-            arr_dtype_name = lsplit[2]
-            if arr_dtype_name == "int64":
-                val_converter = np.int64
-            else:
-                val_converter = np.float64
             output[arr_name] = []
             continue
         assert arr_name is not None
-        output[arr_name].append(val_converter(line))
+        output[arr_name].append(float(line))
     benchmark_input.close()
     converted_output = {}
     for arr_name, arr in output.items():
-        converted_output[arr_name] = np.array(arr)
+        converted_output[arr_name] = array_(arr)
     return converted_output
 
 
@@ -205,14 +219,9 @@ def print_checksum(arr_name, checksums, benchmark_output):
     """
     Print random array to a file.
     """
-    arr_dtype = checksums.dtype
-    if arr_dtype in int_dtypes:
-        dtype_str = "int64"
-    else:
-        dtype_str = "float64"
-    print("B:" + arr_name + ":" + dtype_str, file=benchmark_output)
+    print("B:" + arr_name, file=benchmark_output)
     for val in checksums:
-        print(format_by_dtype(val, arr_dtype), file=benchmark_output)
+        print(float_format.format(val), file=benchmark_output)
     print("E:" + arr_name, file=benchmark_output)
 
 
@@ -225,11 +234,11 @@ def print_checksum_dict(benchmark_name, checksum_dictionnary):
 
 
 def max_diff(arr1, arr2):
-    return np.max(np.abs(arr1 - arr2))
+    return max_(abs_(arr1 - arr2))
 
 
 def max_rel_diff(arr1, arr2):
-    return np.max(np.abs((arr1 - arr2) / (arr1 + arr2) * 2.0))
+    return max_(abs_((arr1 - arr2) / (arr1 + arr2) * 2.0))
 
 
 def add_checksum_to_dict(checksum_dict, arr_name, arr, rng, nstack_checksums=1, stacks=1):
@@ -239,16 +248,37 @@ def add_checksum_to_dict(checksum_dict, arr_name, arr, rng, nstack_checksums=1, 
 
 
 def compare_or_create(
-    checksums_dict, benchmark_name, max_difference=None, max_rel_difference=1.0e-10
+    checksums_dict,
+    benchmark_name,
+    max_difference=None,
+    max_rel_difference=1.0e-10,
+    jit_dependent=False,
+    partial_comparison=False,
 ):
-    # check that the benchmark filename exists.
-    benchmark_checksums = read_all_checksums(benchmark_name)
-    if benchmark_checksums is None:
-        # The benchmark needs to be created and a warning about this needs to be raised.
-        print_checksum_dict(benchmark_name, checksums_dict)
-        raise Exception("WARNING: a benchmark was absent but was created:", benchmark_name)
+    # Methods that implicitly depend on whether Numpy or Torch random number generator is used
+    # have different files for different jit versions.
+    if jit_dependent:
+        from qml2.jit_interfaces import used_jit_name
 
-    # First create checksums from arr and rng.
+        full_benchmark_name = used_jit_name + "_" + benchmark_name
+    else:
+        full_benchmark_name = benchmark_name
+    # check that the benchmark filename exists.
+    benchmark_checksums = read_all_checksums(full_benchmark_name)
+    if benchmark_checksums is None:
+        exception_str_bench_name = benchmark_name
+        if jit_dependent:
+            exception_str_bench_name += " (" + used_jit_name + ")"
+        if partial_comparison:
+            raise Exception(
+                "WARNING: a partially checked benchmark was absent: " + exception_str_bench_name
+            )
+        # The benchmark needs to be created and a warning about this needs to be raised.
+        print_checksum_dict(full_benchmark_name, checksums_dict)
+        raise Exception(
+            "WARNING: a benchmark was absent but was created: " + exception_str_bench_name
+        )
+
     all_passed = True
     for name, checksums in checksums_dict.items():
         assert name in benchmark_checksums
@@ -270,7 +300,7 @@ def compare_or_create(
 
 
 def fix_reductor_signs(reductor):
-    reductor *= np.sign(reductor[0])
+    reductor *= sign_(reductor[0])
 
 
 def fix_reductors_signs(reductors):

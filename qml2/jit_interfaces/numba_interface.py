@@ -1,5 +1,5 @@
-from multiprocessing import Pool
-from typing import List, Tuple, Union
+import multiprocessing as multiprocessing_
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 from numba import jit, prange
@@ -7,7 +7,7 @@ from scipy.linalg import cho_factor, cho_solve, lu_factor, lu_solve
 
 from .jit_manager import defined_jit_, numba_flag
 
-Pool_ = Pool
+Pool_ = multiprocessing_.Pool
 
 jit_ = defined_jit_(jit, numba_flag)
 
@@ -68,6 +68,7 @@ optional_ndarray_ = Union[ndarray_, None]
 dtype_ = type
 dim0float_array_ = dfloat_
 dim0int_array_ = dint_
+OptionalGenerator_ = Optional[np.random.Generator]
 # constructors for standalone
 constr_float_ = float_
 constr_int_ = int_
@@ -127,6 +128,14 @@ copy_ = np.copy
 copy_detached_ = copy_  # only different in pyTorch
 # array lookup and manipulation
 where_ = np.where
+
+
+@jit_
+def elements_where_(val_arr, bool_arr):
+    # because where_ in these situations causes problems with TorchScript.
+    return val_arr[where_(bool_arr)]
+
+
 argsort_ = np.argsort
 diag_indices_from_ = np.diag_indices_from
 append_ = np.append
@@ -145,6 +154,7 @@ any_ = np.any
 all_ = np.all
 # linear operations
 dot_ = np.dot
+cross_ = np.cross
 matmul_ = np.matmul
 # trigonometry
 cos_ = np.cos
@@ -153,6 +163,9 @@ arccos_ = np.arccos
 # analytic functions
 sqrt_ = np.sqrt
 exp_ = np.exp
+cosh_ = np.cosh
+sinh_ = np.sinh
+tanh_ = np.tanh
 log_ = np.log
 # Generating grids.
 linspace_ = np.linspace
@@ -160,6 +173,7 @@ linspace_ = np.linspace
 prange_ = prange
 # common functions
 sum_ = np.sum
+prod_ = np.prod
 abs_ = np.abs
 square_ = np.square
 l2_norm_ = np.linalg.norm

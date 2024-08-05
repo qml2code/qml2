@@ -44,10 +44,13 @@ class Compound:
                 [nuclear_charge(atomtype) for atomtype in self.atomtypes], dtype=int_
             )
 
-        self.name = xyz
+        if isinstance(xyz, str):
+            self.name = xyz
+        else:
+            self.name = repr(xyz)
         self.representation = None
 
-    def generate_coulomb_matrix(self, size=23):
+    def generate_coulomb_matrix(self, size=29):
         self.representation = generate_coulomb_matrix(
             self.nuclear_charges, self.coordinates, size=size
         )
@@ -55,10 +58,8 @@ class Compound:
     def generate_fchl19(self, **kwargs):
         self.representation = generate_fchl19(self.nuclear_charges, self.coordinates, **kwargs)
 
-    def generate_bob(self, bags, ncm, id, **kwargs):
-        self.representation = generate_bob(
-            self.nuclear_charges, self.coordinates, bags, ncm, id, **kwargs
-        )
+    def generate_bob(self, bags, **kwargs):
+        self.representation = generate_bob(self.nuclear_charges, self.coordinates, bags, **kwargs)
 
     def generate_slatm(self, mbtypes, **kwargs):
         self.representation = generate_slatm(

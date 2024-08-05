@@ -13,7 +13,9 @@ from ..jit_interfaces import (
     jit_,
     linspace_,
     log_,
+    max_,
     ndarray_,
+    optional_ndarray_,
     pi_,
     prange_,
     sign_,
@@ -144,7 +146,7 @@ def generate_fchl19(
     two_body_decay: float_ = 1.8,
     three_body_decay: float_ = 0.57,
     three_body_weight: float_ = 13.4,
-    cell: ndarray_ = None,
+    cell: optional_ndarray_ = None,
     pi_: float_ = pi_,
     dint_: dtype_ = dint_,
 ):
@@ -189,7 +191,7 @@ def generate_fchl19(
     distance_matrix, relevant_distance_ids, relevant_distance_nums = calculate_distances_wrcut(
         coordinates, natoms_tot, max_rel_dist
     )
-    max_num_rel_distances = max(relevant_distance_nums)
+    max_num_rel_distances = int(max_(relevant_distance_nums))
     # Two-body decay
     invcut = 1.0 / rcut
     rdecay = decay(

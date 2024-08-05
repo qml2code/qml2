@@ -22,16 +22,16 @@ from ..jit_interfaces import (
 )
 from ..utils import get_atom_environment_ranges, get_element_ids_from_sorted
 from .gradient_kernels import add_force_kernel_contributions, get_energy_force_ranges
-from .hadamard import (
+from .sorf import (
     fast_walsh_hadamard,
+    generate_sorf_stack_phases,
     hadamard_norm_const,
-    hadamard_rff_kernel_stack_phases,
     rff_vec_norm_const,
 )
 
 
 @jit_
-def hadamard_rff_add_kernel_stack_wderivatives(
+def sorf_stack_wderivatives(
     red_scaled_reps,
     temp_red_reps,
     sorf_diags,
@@ -39,15 +39,13 @@ def hadamard_rff_add_kernel_stack_wderivatives(
     norm_const: dim0float_array_,
     rff_der_output,
 ) -> ndarray_:
-    hadamard_rff_kernel_stack_phases(
-        red_scaled_reps, temp_red_reps, sorf_diags, biases, norm_const
-    )
+    generate_sorf_stack_phases(red_scaled_reps, temp_red_reps, sorf_diags, biases, norm_const)
     rff_der_output[:] = -sin_(save_(temp_red_reps))
     return cos_(save_(temp_red_reps))
 
 
 @jit_
-def hadamard_rff_add_kernel_func_forces(
+def add_sorf_func_forces(
     rep_grads,
     rel_neighbors,
     rel_neighbor_num: int_,
@@ -75,7 +73,7 @@ def hadamard_rff_add_kernel_func_forces(
 
 
 @jit_
-def hadamard_rff_add_force_kernel_func(
+def add_force_sorf_func(
     red_scaled_rep,
     rep_grads,
     rel_neighbors,
@@ -92,7 +90,7 @@ def hadamard_rff_add_force_kernel_func(
     nCartDim: int_ = nCartDim,
 ) -> None:
     # Add the kernel element.
-    kernel_products[:] += hadamard_rff_add_kernel_stack_wderivatives(
+    kernel_products[:] += sorf_stack_wderivatives(
         red_scaled_rep, temp_red_reps, sorf_diags, biases, norm_const, temp_rff_der
     )
     # For each RFF calculate and add corresponding component.
@@ -104,7 +102,7 @@ def hadamard_rff_add_force_kernel_func(
         der_ub = der_lb + der_step
         temp_red_reps[:] = 0.0
         temp_red_reps[feature] = temp_rff_der[feature]
-        hadamard_rff_add_kernel_func_forces(
+        add_sorf_func_forces(
             rep_grads,
             rel_neighbors,
             rel_neighbor_num,
@@ -118,7 +116,7 @@ def hadamard_rff_add_force_kernel_func(
 
 
 @jit_
-def hadamard_rff_add_product_force_kernel_func(
+def add_product_force_sorf_func(
     red_scaled_rep,
     rep_grads,
     rel_neighbors,
@@ -134,12 +132,12 @@ def hadamard_rff_add_product_force_kernel_func(
 ):
     kernel_component[0] += dot_(
         alphas,
-        hadamard_rff_add_kernel_stack_wderivatives(
+        sorf_stack_wderivatives(
             red_scaled_rep, temp_red_reps, sorf_diags, biases, norm_const, temp_rff_der
         ),
     )
     temp_rff_der *= alphas
-    hadamard_rff_add_kernel_func_forces(
+    add_sorf_func_forces(
         rep_grads,
         rel_neighbors,
         rel_neighbor_num,
@@ -152,7 +150,7 @@ def hadamard_rff_add_product_force_kernel_func(
 
 
 @jit_
-def local_hadamard_force_kernel_func(
+def generate_local_force_sorf_func(
     red_scaled_reps,
     rep_grads,
     rel_neighbors,
@@ -172,7 +170,7 @@ def local_hadamard_force_kernel_func(
     kernel_product_derivatives[:] = 0.0
     for i_atom in range(natoms):
         el_id = int(element_ids[i_atom])
-        hadamard_rff_add_force_kernel_func(
+        add_force_sorf_func(
             red_scaled_reps[i_atom],
             rep_grads[i_atom],
             rel_neighbors[i_atom],
@@ -190,7 +188,7 @@ def local_hadamard_force_kernel_func(
 
 
 @jit_
-def local_hadamard_product_force_kernel_func(
+def generate_local_force_sorf_product_func(
     red_scaled_reps,
     rep_grads,
     rel_neighbors,
@@ -209,7 +207,7 @@ def local_hadamard_product_force_kernel_func(
     kernel_component[:] = 0.0
     for i_atom in range(natoms):
         el_id = int(element_ids[i_atom])
-        hadamard_rff_add_product_force_kernel_func(
+        add_product_force_sorf_func(
             red_scaled_reps[i_atom],
             rep_grads[i_atom],
             rel_neighbors[i_atom],
@@ -226,15 +224,15 @@ def local_hadamard_product_force_kernel_func(
 
 
 @jit_
-def rff_lower_upper_bounds(feature_stack: int_, npcas: int_) -> Tuple[int_, int_]:
-    lb_rff = npcas * feature_stack
-    ub_rff = lb_rff + npcas
+def rff_lower_upper_bounds(feature_stack: int_, init_size: int_) -> Tuple[int_, int_]:
+    lb_rff = init_size * feature_stack
+    ub_rff = lb_rff + init_size
     return lb_rff, ub_rff
 
 
 # TODO: A more Python-esque way to rewrite avoiding copy-pasted between w. alphas - no alphas?
 @jit_(numba_parallel=True)
-def local_hadamard_force_kernel_processed_input(
+def generate_local_force_sorf_processed_input(
     reduced_scaled_representations,
     representation_gradients,
     relevant_neighbors,
@@ -248,7 +246,7 @@ def local_hadamard_force_kernel_processed_input(
     en_force_ranges_arr,
     mol_ubound_arr,
     nfeature_stacks: int_,
-    npcas: int_,
+    init_size: int_,
     true_nfeatures: int_ = None,
     nCartDim: int_ = nCartDim,
 ):
@@ -257,20 +255,20 @@ def local_hadamard_force_kernel_processed_input(
     # KK: not %100 sure it's necessary
     assert max_(element_ids) <= all_sorf_diags.shape[0]
 
-    assert npcas == reduced_scaled_representations.shape[1]
+    assert init_size == reduced_scaled_representations.shape[1]
 
-    norm_const = hadamard_norm_const(npcas)
+    norm_const = hadamard_norm_const(init_size)
 
     nmols = mol_ubound_arr.shape[0] - 1
     nfeatures = kernel.shape[1]
-    assert nfeature_stacks * npcas == nfeatures
+    assert nfeature_stacks * init_size == nfeatures
 
     for feature_stack in prange_(nfeature_stacks):
-        temp_red_reps = empty_((npcas,))
-        temp_rff_der = empty_((npcas,))
-        temp_kernel_products = empty_((nmols, npcas))
-        temp_kernel_product_derivatives = empty_((npcas * mol_ubound_arr[-1] * nCartDim))
-        lb_rff, ub_rff = rff_lower_upper_bounds(feature_stack, npcas)
+        temp_red_reps = empty_((init_size,))
+        temp_rff_der = empty_((init_size,))
+        temp_kernel_products = empty_((nmols, init_size))
+        temp_kernel_product_derivatives = empty_((init_size * mol_ubound_arr[-1] * nCartDim))
+        lb_rff, ub_rff = rff_lower_upper_bounds(feature_stack, init_size)
 
         product_derivative_lb = 0
         for mol_id in range(nmols):
@@ -278,8 +276,8 @@ def local_hadamard_force_kernel_processed_input(
             ub_mol_rep = mol_ubound_arr[mol_id + 1]
             natoms = ub_mol_rep - lb_mol_rep
 
-            product_derivative_ub = product_derivative_lb + npcas * natoms * nCartDim
-            local_hadamard_force_kernel_func(
+            product_derivative_ub = product_derivative_lb + init_size * natoms * nCartDim
+            generate_local_force_sorf_func(
                 reduced_scaled_representations[lb_mol_rep:ub_mol_rep],
                 representation_gradients[lb_mol_rep:ub_mol_rep],
                 relevant_neighbors[lb_mol_rep:ub_mol_rep],
@@ -305,7 +303,7 @@ def local_hadamard_force_kernel_processed_input(
             kernel[en_force_ranges_arr[mol_id], lb_rff:ub_rff] = temp_kernel_products[mol_id, :]
             # Copy forces to kernel.
             prod_der_bound_step = nCartDim * (mol_ubound_arr[mol_id + 1] - mol_ubound_arr[mol_id])
-            for rff_id in range(npcas):
+            for rff_id in range(init_size):
                 product_derivative_ub = product_derivative_lb + prod_der_bound_step
                 kernel[
                     en_force_ranges_arr[mol_id] + 1 : en_force_ranges_arr[mol_id + 1],
@@ -320,7 +318,7 @@ def local_hadamard_force_kernel_processed_input(
 
 
 @jit_
-def local_hadamard_product_force_kernel_full_stack(
+def generate_local_force_sorf_product_full_stack(
     reduced_scaled_representations,
     representation_gradients,
     relevant_neighbors,
@@ -345,7 +343,7 @@ def local_hadamard_product_force_kernel_full_stack(
         lb_mol_en_forces = en_force_ranges_arr[mol_id]
         ub_mol_en_forces = en_force_ranges_arr[mol_id + 1]
         natoms = ub_mol - lb_mol
-        local_hadamard_product_force_kernel_func(
+        generate_local_force_sorf_product_func(
             reduced_scaled_representations[lb_mol:ub_mol],
             representation_gradients[lb_mol:ub_mol],
             relevant_neighbors[lb_mol:ub_mol],
@@ -367,7 +365,7 @@ def local_hadamard_product_force_kernel_full_stack(
 
 
 @jit_(numba_parallel=True)
-def local_hadamard_product_force_kernel_processed_input(
+def generate_local_force_sorf_product_processed_input(
     reduced_scaled_representations,
     representation_gradients,
     relevant_neighbors,
@@ -382,21 +380,21 @@ def local_hadamard_product_force_kernel_processed_input(
     en_force_ranges_arr,
     mol_ubound_arr,
     nfeature_stacks: int_,
-    npcas: int_,
+    init_size: int_,
 ):
     assert reduced_scaled_representations.shape[0] == element_ids.shape[0]
     assert all_sorf_diags.shape[0] == all_biases.shape[0]
     # KK: not %100 sure it's necessary
     assert max_(element_ids) <= all_sorf_diags.shape[0]
 
-    norm_const = hadamard_norm_const(npcas)
+    norm_const = hadamard_norm_const(init_size)
 
     output_vector[:] = 0.0
 
     for feature_stack in prange_(nfeature_stacks):
-        rff_lb = feature_stack * npcas
-        rff_ub = rff_lb + npcas
-        temp_output_vector = local_hadamard_product_force_kernel_full_stack(
+        rff_lb = feature_stack * init_size
+        rff_ub = rff_lb + init_size
+        temp_output_vector = generate_local_force_sorf_product_full_stack(
             reduced_scaled_representations,
             representation_gradients,
             relevant_neighbors,
@@ -413,11 +411,11 @@ def local_hadamard_product_force_kernel_processed_input(
         )
         # reduce over parallel execution
         output_vector += temp_output_vector
-    output_vector *= rff_vec_norm_const(npcas * nfeature_stacks)  # normalization
+    output_vector *= rff_vec_norm_const(init_size * nfeature_stacks)  # normalization
 
 
 @jit_
-def local_hadamard_force_kernel(
+def generate_local_force_sorf(
     representations,
     representation_gradients,
     ncharges,
@@ -431,7 +429,7 @@ def local_hadamard_force_kernel(
     kernel,
     sigma: dim0float_array_,
     nfeature_stacks: int,
-    npcas: int,
+    init_size: int,
 ):
     ubound_arr = get_atom_environment_ranges(na)
     en_force_ranges = get_energy_force_ranges(na)
@@ -439,7 +437,7 @@ def local_hadamard_force_kernel(
     reduced_scaled_representations = project_scale_local_representations(
         representations, all_element_ids, reductors, sigma
     )
-    local_hadamard_force_kernel_processed_input(
+    generate_local_force_sorf_processed_input(
         reduced_scaled_representations,
         representation_gradients,
         relevant_neighbors,
@@ -453,16 +451,16 @@ def local_hadamard_force_kernel(
         en_force_ranges,
         ubound_arr,
         nfeature_stacks,
-        npcas,
+        init_size,
     )
 
 
 @jit_(numba_parallel=True)
-def local_hadamard_product_force_kernel(
+def generate_local_force_sorf_product(
     representations,
     representation_gradients,
     ncharges,
-    na,
+    natoms,
     relevant_neighbors,
     relevant_neighbor_nums,
     reductors,
@@ -473,15 +471,15 @@ def local_hadamard_product_force_kernel(
     alphas,
     sigma: dim0float_array_,
     nfeature_stacks: int,
-    npcas: int,
+    init_size: int,
 ):
-    ubound_arr = get_atom_environment_ranges(na)
-    en_force_ranges = get_energy_force_ranges(na)
+    ubound_arr = get_atom_environment_ranges(natoms)
+    en_force_ranges = get_energy_force_ranges(natoms)
     all_element_ids = get_element_ids_from_sorted(ncharges, sorted_elements)
     reduced_scaled_representations = project_scale_local_representations(
         representations, all_element_ids, reductors, sigma
     )
-    local_hadamard_product_force_kernel_processed_input(
+    generate_local_force_sorf_product_processed_input(
         reduced_scaled_representations,
         representation_gradients,
         relevant_neighbors,
@@ -496,5 +494,5 @@ def local_hadamard_product_force_kernel(
         en_force_ranges,
         ubound_arr,
         nfeature_stacks,
-        npcas,
+        init_size,
     )

@@ -1,27 +1,29 @@
 # NOTE: KK: Nick Browning didn't use multipliers for training energies and forces. I implemented such an option anyway
 # because I think that it should affect how regularization affects how accurately training set energies and forces are reproduced.
-from ..basic_utils import divided_by_parents, dump2pkl, loadpkl, mktmpdir, rmdir
+import tempfile
+
+from ..basic_utils import divided_by_parents, dump2pkl, loadpkl
 from ..dimensionality_reduction import (
     project_local_representations,
     project_scale_local_representations,
 )
 from ..jit_interfaces import concatenate_, dint_, dot_, empty_, zeros_
-from ..kernels.gradient_hadamard import (
-    local_hadamard_force_kernel_processed_input,
-    local_hadamard_product_force_kernel_processed_input,
-)
 from ..kernels.gradient_kernels import (
     get_energy_force_ranges,
     prediction_vector_to_forces_energies,
 )
+from ..kernels.gradient_sorf import (
+    generate_local_force_sorf_processed_input,
+    generate_local_force_sorf_product_processed_input,
+)
 from ..math import lu_solve
 from ..utils import check_allocation, get_atom_environment_ranges, get_element_ids_from_sorted
-from .hadamard import HadamardFeaturesLocalModel
 from .krr_forces import OQMLModel
+from .sorf import SORFLocalModel
 
 
 # KK: the class includes some trash from both parents, but I don't think getting rid of it is worth the effort.
-class HadamardFeaturesLocalForcesModel(HadamardFeaturesLocalModel, OQMLModel):
+class SORFLocalForcesModel(SORFLocalModel, OQMLModel):
     def __init__(
         self,
         num_Z_matrix_dumps=None,
@@ -33,7 +35,7 @@ class HadamardFeaturesLocalForcesModel(HadamardFeaturesLocalModel, OQMLModel):
         # Divide kwargs by what is relevant for the two parents and
         # initialize according to it.
         keyword_relevance = {
-            HadamardFeaturesLocalModel: [
+            SORFLocalModel: [
                 "sorted_elements",
                 "npcas",
                 "nfeatures",
@@ -42,7 +44,7 @@ class HadamardFeaturesLocalForcesModel(HadamardFeaturesLocalModel, OQMLModel):
             ]
         }
         # all other keywords will go into OQMLModel init.
-        parent_init_order = [HadamardFeaturesLocalModel, OQMLModel]
+        parent_init_order = [SORFLocalModel, OQMLModel]
         # ensuring that by default energy importance is not used.
         kwargs["energy_importance"] = energy_importance
         divided_by_parents(self, parent_init_order, "__init__", keyword_relevance, kwargs)
@@ -87,7 +89,7 @@ class HadamardFeaturesLocalForcesModel(HadamardFeaturesLocalModel, OQMLModel):
         all_rel_neighbor_nums,
         mult_vals=None,
     ):
-        self.dump_Z_dir = mktmpdir(template="Z_matrix_dump.XXXXXX")
+        self.dump_Z_dir = tempfile.TemporaryDirectory(prefix="Z_matrix_dump.")
         self.dumped_Z_pkl_files = []
         en_force_ranges_arr = get_energy_force_ranges(atom_nums)
         nvals = en_force_ranges_arr[-1]
@@ -97,7 +99,7 @@ class HadamardFeaturesLocalForcesModel(HadamardFeaturesLocalModel, OQMLModel):
         ):
             temp_Z = empty_((nvals, feature_ub - feature_lb))
             dump_nfeature_stacks = feature_stack_ub - feature_stack_lb
-            local_hadamard_force_kernel_processed_input(
+            generate_local_force_sorf_processed_input(
                 all_red_representations,
                 all_representation_grads,
                 all_rel_neighbors,
@@ -123,7 +125,7 @@ class HadamardFeaturesLocalForcesModel(HadamardFeaturesLocalModel, OQMLModel):
                 self.temp_Z_matrix = used_Z
                 return
 
-            dump_filename = self.dump_Z_dir + "/Z_dump_" + str(dump_id) + ".pkl"
+            dump_filename = self.dump_Z_dir.name + "/Z_dump_" + str(dump_id) + ".pkl"
 
             dump2pkl(
                 (feature_stack_lb, feature_stack_ub, feature_lb, feature_ub, used_Z),
@@ -158,7 +160,7 @@ class HadamardFeaturesLocalForcesModel(HadamardFeaturesLocalModel, OQMLModel):
         if self.num_Z_matrix_dumps is None:
             self.temp_Z_matrix = None
         else:
-            rmdir(self.dump_Z_dir)
+            self.dump_Z_dir.cleanup()
             self.dump_Z_dir = None
             self.dumped_Z_pkl_files = None
 
@@ -268,7 +270,7 @@ class HadamardFeaturesLocalForcesModel(HadamardFeaturesLocalModel, OQMLModel):
         self.temp_prediction_vector = check_allocation(
             (energy_force_ranges[nmols],), output=self.temp_prediction_vector
         )
-        local_hadamard_product_force_kernel_processed_input(
+        generate_local_force_sorf_product_processed_input(
             self.temp_reduced_scaled_reps,
             self.temp_rep_grads,
             self.temp_relevant_neighbor_arr,

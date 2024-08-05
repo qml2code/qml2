@@ -4,6 +4,7 @@ from typing import Tuple, Union
 
 from .jit_interfaces import (
     dot_,
+    elements_where_,
     empty_,
     int_,
     jit_,
@@ -13,7 +14,6 @@ from .jit_interfaces import (
     standard_normal_,
     sum_,
     svd_,
-    where_,
 )
 from .utils import check_allocation, get_sorted_elements
 
@@ -72,7 +72,7 @@ def get_reductor(representations, npcas: int_, num_samples: int_ = 1024):
     reductor = eigvecs[:, :npcas]
     size_from = reductor.shape[0]
     size_to = reductor.shape[1]
-    print(size_from, "->", size_to, "Cumulative Explained Feature Variance =", cev, "%%")
+    print(size_from, "->", size_to, "Cumulative Explained Feature Variance =", float(cev), "%")
 
     return reductor
 
@@ -93,8 +93,11 @@ def get_reductors_diff_species(
     for i_element in range(nelements):
         element = sorted_elements[i_element]
         # TODO:KK:this use of where_ causes errors with TorchScript.
-        el_reps = representations[where_(ncharges == element)]
-        all_reductors[i_element] = get_reductor(el_reps, npcas, num_samples=num_samples)
+        # el_reps = representations[where_(ncharges == element)]
+        el_reps = elements_where_(representations, (ncharges == element))
+        all_reductors[i_element, :, :] = get_reductor(el_reps, npcas, num_samples=num_samples)[
+            :, :
+        ]
     return all_reductors, sorted_elements
 
 

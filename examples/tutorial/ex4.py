@@ -4,7 +4,7 @@ from __future__ import print_function
 import numpy as np
 from tutorial_data import compounds, energy_pbe0
 
-from qml2.kernels import gaussian_kernel
+from qml2.kernels import gaussian_kernel, gaussian_kernel_symmetric
 from qml2.math import cho_solve
 
 if __name__ == "__main__":
@@ -13,7 +13,7 @@ if __name__ == "__main__":
         mol.generate_coulomb_matrix(size=23)
         # mol.generate_bob(size=23, asize={"O":3, "C":7, "N":3, "H":16, "S":1})
 
-    # Make a big 2D array with all the
+    # Make a big 2D array with all the representation vectors.
     X = np.array([mol.representation for mol in compounds])
     # X = np.array([mol.bob for mol in compounds])
 
@@ -31,7 +31,8 @@ if __name__ == "__main__":
 
     # Calculate the Gaussian kernel
     sigma = 700.0
-    K = gaussian_kernel(X_training, X_training, sigma)
+    K = gaussian_kernel_symmetric(X_training, sigma)
+    # Analogous to: K = gaussian_kernel(X_training, X_training, sigma)
     print(K)
 
     # Add a small lambda to the diagonal of the kernel matrix

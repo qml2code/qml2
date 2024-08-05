@@ -9,13 +9,14 @@ from ..dimensionality_reduction import (
     project_scale_representations,
 )
 from ..jit_interfaces import array_, concatenate_, dint_, dot_, empty_, matmul_
-from ..kernels.hadamard import (
-    create_SORF_matrices,
-    create_SORF_matrices_diff_species,
-    hadamard_kernel_processed_input,
-    local_hadamard_kernel_processed_input,
+from ..kernels.sorf import (
+    create_sorf_matrices,
+    create_sorf_matrices_diff_species,
+    generate_local_sorf_processed_input,
+    generate_sorf_processed_input,
 )
 from ..math import lu_solve
+from ..representations import generate_fchl19
 from ..utils import (
     check_allocation,
     get_atom_environment_ranges,
@@ -30,7 +31,7 @@ def is_power2(n: int):
     return (n & (n - 1) == 0) and n != 0
 
 
-class HadamardFeaturesModel(KRRModel):
+class SORFModel(KRRModel):
     def __init__(self, npcas=128, nfeatures=None, ntransforms=2, **other_kwargs):
         # feature size
         KRRModel.__init__(self, **other_kwargs)
@@ -83,7 +84,7 @@ class HadamardFeaturesModel(KRRModel):
         return (r, r)
 
     def init_features(self):
-        self.biases, self.sorf_diags = create_SORF_matrices(
+        self.biases, self.sorf_diags = create_sorf_matrices(
             self.nfeature_stacks, self.ntransforms, self.npcas
         )
         self.temp_kernel = empty_((1, self.nfeatures))
@@ -97,7 +98,7 @@ class HadamardFeaturesModel(KRRModel):
         self.optimize_hyperparameters(all_red_representations)
         all_red_representations[:, :] /= self.sigma
 
-        hadamard_kernel_processed_input(
+        generate_sorf_processed_input(
             all_red_representations,
             self.sorf_diags,
             self.biases,
@@ -144,7 +145,7 @@ class HadamardFeaturesModel(KRRModel):
             nmols=nmols,
         )
         self.temp_kernel = check_allocation((nmols, self.nfeatures), output=self.temp_kernel)
-        hadamard_kernel_processed_input(
+        generate_sorf_processed_input(
             self.temp_reduced_scaled_reps,
             self.sorf_diags,
             self.biases,
@@ -163,10 +164,12 @@ class HadamardFeaturesModel(KRRModel):
         return self.predict_from_representations(self.temp_reps)[0]
 
 
-class HadamardFeaturesLocalModel(HadamardFeaturesModel, KRRLocalModel):
-    def __init__(self, sorted_elements=None, **other_kwargs):
+class SORFLocalModel(SORFModel, KRRLocalModel):
+    def __init__(
+        self, representation_function=generate_fchl19, sorted_elements=None, **other_kwargs
+    ):
         # feature size
-        HadamardFeaturesModel.__init__(self, **other_kwargs)
+        SORFModel.__init__(self, representation_function=representation_function, **other_kwargs)
         self.sorted_elements = sorted_elements
         if self.sorted_elements is None:
             self.nelements = None
@@ -231,7 +234,7 @@ class HadamardFeaturesLocalModel(HadamardFeaturesModel, KRRLocalModel):
     def init_features(self):
         if self.all_biases is not None:
             return
-        self.all_biases, self.all_sorf_diags = create_SORF_matrices_diff_species(
+        self.all_biases, self.all_sorf_diags = create_sorf_matrices_diff_species(
             self.nfeature_stacks, self.nelements, self.ntransforms, self.npcas
         )
         self.temp_kernel = empty_((1, self.nfeatures))
@@ -247,7 +250,7 @@ class HadamardFeaturesLocalModel(HadamardFeaturesModel, KRRLocalModel):
         self.optimize_hyperparameters(all_red_representations)
         all_red_representations[:, :] /= self.sigma
         ubound_arr = get_atom_environment_ranges(atom_nums)
-        local_hadamard_kernel_processed_input(
+        generate_local_sorf_processed_input(
             all_red_representations,
             element_ids,
             self.all_sorf_diags,
@@ -289,7 +292,7 @@ class HadamardFeaturesLocalModel(HadamardFeaturesModel, KRRLocalModel):
         self.fit(all_representations, all_nuclear_charges, training_set_values, atom_nums, ntrain)
 
     def predict_from_kernel(self, nmols=1):
-        return HadamardFeaturesModel.predict_from_kernel(self, nmols)
+        return SORFModel.predict_from_kernel(self, nmols)
 
     def predict_from_representations(self, representations, nuclear_charges, atom_nums=None):
         if atom_nums is None:
@@ -312,7 +315,7 @@ class HadamardFeaturesLocalModel(HadamardFeaturesModel, KRRLocalModel):
         )
         nmols = ubound_arr.shape[0] - 1
         self.temp_kernel = check_allocation((nmols, self.nfeatures), output=self.temp_kernel)
-        local_hadamard_kernel_processed_input(
+        generate_local_sorf_processed_input(
             self.temp_reduced_scaled_reps,
             self.temp_element_ids,
             self.all_sorf_diags,

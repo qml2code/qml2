@@ -161,7 +161,7 @@ def get_sbot_local(
     ys = np.zeros(nx)
 
     for ia1 in prange(len(ias1)):
-        for ia3 in prange(len(ias3)) if z1 == z3 else range(len(ias3)):
+        for ia3 in range(len(ias3)) if z1 == z3 else range(len(ias3)):
             i, j, k = ias1[ia1], ia_python, ias3[ia3]
             if not (
                 eps < distance_matrix[i, j] <= rcut

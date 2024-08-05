@@ -1,4 +1,5 @@
-# TO-DO change the way the default spin is chosen?
+# NOTE: Representations of spin and charge excitation Slater pairs from restricted calculation results
+# was implemented here but never tested in terms of utility for ML.
 
 from os.path import isfile
 
@@ -7,7 +8,7 @@ from pyscf import dft, gto, lo, scf
 
 from ..basic_utils import OptionUnavailableError, dump2pkl, loadpkl, overwrite_when_possible
 from ..compound import Compound
-from ..jit_interfaces import array_
+from ..jit_interfaces import array_, zeros_
 from .aux_classes import OML_pyscf_calc_params, converged_mf, generate_ao_arr
 from .optimize_basis_sets import optimize_molecule_basis_rescalings, rescale_mol_basis
 from .representations import (
@@ -280,16 +281,16 @@ class OML_Compound(Compound):
             self.mo_occ = self.alter_mo_occ(mf.mo_occ)
 
         self.mo_coeff = self.adjust_spin_mat_dimen(mf.mo_coeff)
-        self.mo_occ = self.adjust_spin_mat_dimen(mf.mo_occ)
+        self.mo_occ = self.adjust_spin_mo_occ(mf.mo_occ)
         self.mo_energy = self.adjust_spin_mat_dimen(mf.mo_energy)
         self.aos = generate_ao_arr(pyscf_mol)
         self.atom_ao_ranges = generate_atom_ao_ranges(pyscf_mol)
         self.e_tot = mf.e_tot
-        self.ovlp_mat = pyscf_mol.intor_symmetric("int1e_ovlp")
+        self.ovlp_mat = array_(pyscf_mol.intor_symmetric("int1e_ovlp"))
 
         if (self.calc_type in HF_methods) and (self.solvent_eps is None):
-            self.j_mat = self.adjust_spin_mat_dimen(mf.get_j())
-            self.k_mat = self.adjust_spin_mat_dimen(mf.get_k())
+            self.j_mat = self.adjust_spin_mat_dimen(mf.get_j(), already_spin_adj=True)
+            self.k_mat = self.adjust_spin_mat_dimen(mf.get_k(), already_spin_adj=True)
             self.fock_mat = self.adjust_spin_mat_dimen(mf.get_fock())
 
         self.orb_mat = self.localized_orbs(pyscf_mol=pyscf_mol)
@@ -302,7 +303,7 @@ class OML_Compound(Compound):
         orb_mat = []
         for occ_orb_arr in occ_orb_arrs:
             if occ_orb_arr.size == 0:
-                orb_mat.append([])
+                orb_mat.append(None)
             else:
                 if self.localization_procedure not in available_localization_procedures:
                     raise OptionUnavailableError
@@ -325,7 +326,7 @@ class OML_Compound(Compound):
                             kernel_kwargs = {"mo_coeff": occ_orb_arr}
                     loc_obj.kernel(**kernel_kwargs)
                     new_orb_mat = loc_obj.mo_coeff
-                orb_mat.append(new_orb_mat)
+                orb_mat.append(array_(new_orb_mat))
         return orb_mat
 
     def create_mats_savefile(self):
@@ -368,6 +369,8 @@ class OML_Compound(Compound):
             self.run_calcs(initial_guess_comp=initial_guess_comp)
         self.orb_reps = []
         for spin in range(self.num_spins()):
+            if self.orb_mat[spin] is None:
+                continue
             #   Generate the array of orbital representations.
             coupling_matrices = None
             if rep_params.propagator_coup_mat:
@@ -386,8 +389,8 @@ class OML_Compound(Compound):
             if coupling_matrices is None:
                 coupling_matrices = (
                     self.fock_mat[spin],
-                    self.j_mat[spin] / orb_occ_prop_coeff(self),
-                    self.k_mat[spin] / orb_occ_prop_coeff(self),
+                    self.jk_mat_spin_rescaled(self.j_mat[spin]),
+                    self.jk_mat_spin_rescaled(self.k_mat[spin]),
                 )
             cur_orb_rep_array = generate_orb_rep_array(
                 self.orb_mat[spin],
@@ -408,6 +411,9 @@ class OML_Compound(Compound):
                     self.orb_reps[orb_rep_counter].rho = orb_occ
             if rep_params.atom_sorted_pseudo_orbs:
                 self.orb_reps = gen_atom_sorted_pseudo_orbs(self.orb_reps)
+
+    def jk_mat_spin_rescaled(self, mat):
+        return mat / jk_mat_spin_rescaling(self)
 
     #   Find maximal value of angular momentum for AOs of current molecule.
     def find_max_angular_momentum(self):
@@ -552,17 +558,31 @@ class OML_Compound(Compound):
             if occ < neglect_orb_occ:
                 return orb_id
 
-    def adjust_spin_mat_dimen(self, matrices):
-        if self.calc_type not in unrestricted_methods:
-            return array_([matrices])
-        else:
+    def adjust_spin_mat_dimen(self, matrices, already_spin_adj=False):
+        if self.calc_type in unrestricted_methods:
             return matrices
+        else:
+            if already_spin_adj and self.spin != 0:
+                return array_(matrices)
+            return array_([matrices for _ in range(self.num_spins())])
+
+    def adjust_spin_mo_occ(self, mo_occ):
+        if self.calc_type in unrestricted_methods:
+            return array_(mo_occ)
+        if self.num_spins() == 1:
+            return self.adjust_spin_mat_dimen(mo_occ)
+        new_mo_occ = zeros_((2, mo_occ.shape[0]))
+        for orb_id, occ_num in enumerate(mo_occ):
+            for spin_id in range(self.num_spins()):
+                if occ_num > spin_id + neglect_orb_occ:
+                    new_mo_occ[spin_id, orb_id] = 1.0
+        return new_mo_occ
 
     def num_spins(self):
-        if self.calc_type not in unrestricted_methods:
-            return 1
-        else:
+        if (self.calc_type in unrestricted_methods) or (self.spin != 0):
             return 2
+        else:
+            return 1
 
 
 def create_dm_init_guess(rdm_maker, initial_guess_comp, nspins):
@@ -597,7 +617,15 @@ def add_LUMO(oml_comp):
 
 
 def orb_occ_prop_coeff(comp):
-    if comp.calc_type not in unrestricted_methods:
+    if comp.num_spins() == 1:
+        return 2.0
+    else:
+        return 1.0
+
+
+def jk_mat_spin_rescaling(comp):
+    nspins = comp.num_spins()
+    if nspins == 1:
         return 2.0
     else:
         return 1.0

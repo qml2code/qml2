@@ -5,9 +5,9 @@ import tarfile
 
 import numpy as np
 
-from qml2 import Compound
+from qml2 import Compound, CompoundList
 from qml2.dimensionality_reduction import get_reductors_diff_species
-from qml2.kernels.hadamard import create_SORF_matrices_diff_species, local_hadamard_kernel
+from qml2.kernels.sorf import create_sorf_matrices_diff_species, generate_local_sorf
 from qml2.math import cho_solve
 from qml2.models.hyperparameter_init_guesses import vector_std
 
@@ -26,19 +26,23 @@ nmols = len(xyzs)
 representations = []
 num_atoms = []
 ncharges = []
+compounds = CompoundList()
 print("Calculating representations.")
 with tarfile.open("../../tests/test_data/qm7.tar.gz") as tar:
     for xyz_name in xyzs:
         xyz = tar.extractfile(xyz_name)
         comp = Compound(xyz=xyz)
-        # calculate FCHL representation
-        comp.generate_fchl19()
+        compounds.append(comp)
 
-        representations += list(comp.representation)
-        num_atoms.append(comp.nuclear_charges.shape[0])
-        ncharges += list(comp.nuclear_charges)
+# calculate FCHL representations in parallel
+compounds.generate_fchl19()
 
-representations = np.array(representations)
+for comp in compounds:
+    representations.append(comp.representation)
+    num_atoms.append(comp.nuclear_charges.shape[0])
+    ncharges += list(comp.nuclear_charges)
+
+representations = np.concatenate(representations)
 num_atoms = np.array(num_atoms)
 ncharges = np.array(ncharges)
 
@@ -49,7 +53,7 @@ reductors, sorted_elements = get_reductors_diff_species(representations, ncharge
 ntransforms = 2
 nfeature_stacks = 16
 nfeatures = nfeature_stacks * npcas
-all_biases, all_sorf_diags = create_SORF_matrices_diff_species(
+all_biases, all_sorf_diags = create_sorf_matrices_diff_species(
     nfeature_stacks, sorted_elements.shape[0], ntransforms, npcas
 )
 # NOTE: for a global representation we would use qml2.kernels.hadamard_kernels.create_SORF_matrices
@@ -58,16 +62,14 @@ all_biases, all_sorf_diags = create_SORF_matrices_diff_species(
 sigma = vector_std(representations)
 
 # Calculate the Z-matrix.
-Z_matrix = np.empty((nmols, nfeatures))
 print("Calculating Z matrix.")
-local_hadamard_kernel(
+Z_matrix = generate_local_sorf(
     representations,
     ncharges,
     num_atoms,
     sorted_elements,
     all_sorf_diags,
     all_biases,
-    Z_matrix,
     sigma,
     nfeature_stacks,
     npcas,
