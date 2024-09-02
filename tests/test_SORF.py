@@ -1,11 +1,10 @@
 # Test generation of Structured Orthogonal Random Features.
-import random
-
 from conftest import (
     add_checksum_to_dict,
     compare_or_create,
     fix_reductor_signs,
     fix_reductors_signs,
+    int2rng,
 )
 
 from qml2.dimensionality_reduction import get_reductor, get_reductors_diff_species
@@ -119,7 +118,7 @@ def run_local_SORF(checksums_storage, checksums_rng):
 
 def test_SORF():
     checksums_storage = {}
-    checksums_rng = random.Random(8)
+    checksums_rng = int2rng(8)
     seed_(8)
     run_global_SORF(checksums_storage, checksums_rng)
     run_local_SORF(checksums_storage, checksums_rng)

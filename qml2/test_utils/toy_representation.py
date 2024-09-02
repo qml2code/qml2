@@ -14,8 +14,13 @@ def all_atoms_relevant(natoms: int_, max_natoms: int_, dint_: dtype_ = dint_):
 
 
 # @jit_
-def generate_toy_representation_with_gradients(
-    nuclear_charges, coordinates, max_natoms=None, nCartDim: int_ = nCartDim, inf_=inf_
+def generate_toy_representation(
+    nuclear_charges,
+    coordinates,
+    gradients=False,
+    max_natoms=None,
+    nCartDim: int_ = nCartDim,
+    inf_=inf_,
 ):
     """
     Generates an array consisting of nuclear charge and inverse distance values for neighbors of each atoms,
@@ -61,11 +66,12 @@ def generate_toy_representation_with_gradients(
             representation_gradients[i_atom, st_id * 2, i_atom] = radial_der
             representation_gradients[i_atom, st_id * 2, other_atom_id] = -radial_der
     num_neighbors += 1  # need to count atom itself as neighbor
-    return representations, representation_gradients, rel_neighbor_list, num_neighbors
+    if gradients:
+        return representations, representation_gradients, rel_neighbor_list, num_neighbors
+    else:
+        return representations
 
 
-def generate_toy_representation(nuclear_charges, coordinates, max_natoms=None):
-    wgrads = generate_toy_representation_with_gradients(
-        nuclear_charges, coordinates, max_natoms=max_natoms
-    )
-    return wgrads[0]
+# shorthand for convenience
+def generate_toy_representation_with_gradients(*args, **kwargs):
+    return generate_toy_representation(*args, gradients=True, **kwargs)

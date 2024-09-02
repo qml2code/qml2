@@ -12,6 +12,7 @@ from .jit_interfaces import (
     logical_not_,
     lu_factor_,
     lu_solve_,
+    reshape_,
     searchsorted_,
     sum_,
     svd_,
@@ -39,29 +40,48 @@ def svd_solve(mat, rhs, rcond=0.0):
     return solve_from_svd(U_mat, singular_values, Vh_mat, rhs, rcond)
 
 
-def solve_w_reg_factor(mat, rhs, factorization, solver, l2reg=None):
+def solve_w_reg_factor(
+    A, B, factorization, solver, l2reg=None, overwrite_a=False, overwrite_b=False
+):
+    if overwrite_b:
+        assert B.flags.f_contiguous, "unlike A, B must be FORTRAN-contiguous to allow overwriting"
     if l2reg is not None:
-        diag_indices = diag_indices_from_(mat)
-        mat_diag_backup = copy_detached_(mat[diag_indices])
-        mat[diag_indices] += l2reg
-    fact = factorization(mat)
-    if l2reg is not None:
-        mat[diag_indices] = mat_diag_backup[:]
-    return solver(fact, rhs)
+        diag_indices = diag_indices_from_(A)
+        if not overwrite_a:
+            A_diag_backup = copy_detached_(A[diag_indices])
+        A[diag_indices] += l2reg
+    if overwrite_a and A.flags.c_contiguous:
+        # TODO: K.Karan.: as far as I understand using "reshape_" instead of "np.asfortranarray" capitalizes on A being Hermitian and thus
+        # not requiring transposition while creating a FORTRAN array; this results in np.reshape being faster in this context.
+        A = reshape_(A, A.shape, order="F")
+    fact = factorization(A, overwrite_a=overwrite_a)
+    if not ((l2reg is None) or overwrite_a):
+        A[diag_indices] = A_diag_backup[:]
+    return solver(fact, B, overwrite_b=overwrite_b)
 
 
-def cho_solve(mat, rhs, l2reg=None):
+def cho_solve(A, B, l2reg=None, overwrite_a=False, overwrite_b=False):
     """
-    Solve "mat*x=rhs" via Cholesky decomposition with either scipy.linalg or torch.linalg.
+    Solve "A*x=B" via Cholesky decomposition with either scipy.linalg or torch.linalg.
     """
-    return solve_w_reg_factor(mat, rhs, cho_factor_, cho_solve_, l2reg=l2reg)
+    return solve_w_reg_factor(
+        A,
+        B,
+        cho_factor_,
+        cho_solve_,
+        l2reg=l2reg,
+        overwrite_a=overwrite_a,
+        overwrite_b=overwrite_b,
+    )
 
 
-def lu_solve(mat, rhs, l2reg=None):
+def lu_solve(A, B, l2reg=None, overwrite_a=False, overwrite_b=False):
     """
-    Solve "mat*x=rhs" via LU decomposition.
+    Solve "A*x=B" via LU decomposition.
     """
-    return solve_w_reg_factor(mat, rhs, lu_factor_, lu_solve_, l2reg=l2reg)
+    return solve_w_reg_factor(
+        A, B, lu_factor_, lu_solve_, l2reg=l2reg, overwrite_a=overwrite_a, overwrite_b=overwrite_b
+    )
 
 
 # KK: Accelerates training if you train on several properties that can be sorted in such a way that each property is available for each molecule for which the

@@ -121,6 +121,8 @@ class OML_Compound(Compound):
             self.spin = spin
 
         self.mats_savefile = mats_savefile
+        self.mats_savefile_final = None
+
         self.basis = basis
         self.used_orb_type = assign_avail_check(used_orb_type, available_orb_types)
         self.use_Huckel = use_Huckel
@@ -238,20 +240,22 @@ class OML_Compound(Compound):
         return output
 
     def check_saved_files(self):
-        if self.mats_savefile is not None:
-            if self.mats_savefile.endswith(".pkl"):
-                self.pyscf_chkfile = self.mats_savefile[:-3] + "chkfile"
-            else:
-                savefile_prename = self.default_savefile_prename(self.mats_savefile)
-                self.pyscf_chkfile = savefile_prename + ".chkfile"
-                savefile_prename += self.savefile_orb_component()
-                self.mats_savefile += ".pkl"
-            if self.write_full_pyscf_chkfile:
-                self.full_pyscf_chkfile = self.pyscf_chkfile + "_full"
-        self.mats_created = ext_isfile(self.mats_savefile)
+        if self.mats_savefile is None:
+            return
+        if self.mats_savefile.endswith(".pkl"):
+            self.pyscf_chkfile = self.mats_savefile[:-3] + "chkfile"
+            self.mats_savefile_final = self.mats_savefile
+        else:
+            savefile_prename = self.default_savefile_prename(self.mats_savefile)
+            self.pyscf_chkfile = savefile_prename + ".chkfile"
+            savefile_prename += self.savefile_orb_component()
+            self.mats_savefile_final = savefile_prename + ".pkl"
+        if self.write_full_pyscf_chkfile:
+            self.full_pyscf_chkfile = self.pyscf_chkfile + "_full"
+        self.mats_created = ext_isfile(self.mats_savefile_final)
         if self.mats_created:
             # Import ab initio results from the savefile.
-            precalc_vals = loadpkl(self.mats_savefile)
+            precalc_vals = loadpkl(self.mats_savefile_final)
             self.assign_calc_res(precalc_vals)
 
     def run_calcs(self, initial_guess_comp=None):
@@ -355,7 +359,7 @@ class OML_Compound(Compound):
             saved_data = {**saved_data, "ao_rescalings": self.ao_rescalings}
         if self.optimize_geometry:
             saved_data["opt_coords"] = self.opt_coords
-        dump2pkl(saved_data, self.mats_savefile)
+        dump2pkl(saved_data, self.mats_savefile_final)
 
     def generate_orb_reps(
         self, rep_params: OML_rep_params = OML_rep_params(), initial_guess_comp=None
@@ -484,7 +488,7 @@ class OML_Compound(Compound):
             pyscf_calc_params=self.pyscf_calc_params,
             dm_init_guess=dm_init_guess,
             use_Huckel=self.use_Huckel,
-            mats_savefile=self.mats_savefile,
+            mats_savefile=self.mats_savefile_final,
         )
         return mf
 

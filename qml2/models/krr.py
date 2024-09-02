@@ -45,7 +45,7 @@ class KRRModel(Module_):
         # hyperparameters
         self.sigma = sigma
         self.init_stability_checks(
-            l2_reg_diag_ratio=l2reg_diag_ratio,
+            l2reg_diag_ratio=l2reg_diag_ratio,
             l2reg=l2reg,
             num_consistency_check=num_consistency_check,
             max_l2reg_diag_ratio=max_l2reg_diag_ratio,
@@ -62,13 +62,13 @@ class KRRModel(Module_):
 
     def init_stability_checks(
         self,
-        l2_reg_diag_ratio=array_(1.0e-6),
+        l2reg_diag_ratio=array_(1.0e-6),
         l2reg=None,
         num_consistency_check=array_(1.0e-6),
         max_l2reg_diag_ratio=array_(1.0),
     ):
         self.l2reg = l2reg
-        self.l2reg_diag_ratio = l2_reg_diag_ratio
+        self.l2reg_diag_ratio = l2reg_diag_ratio
         self.num_consistency_check = num_consistency_check
         self.max_l2reg_diag_ratio = max_l2reg_diag_ratio
 

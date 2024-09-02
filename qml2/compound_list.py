@@ -6,6 +6,7 @@ inherited_attribute_names = [
     "generate_bob",
     "generate_fchl19",
     "generate_slatm",
+    "generate_cmbdf",
 ]
 
 

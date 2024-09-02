@@ -3,6 +3,7 @@ from ..jit_interfaces import (
     all_,
     any_,
     arccos_,
+    array_,
     bool_,
     constr_dfloat_,
     constr_dint_,
@@ -329,7 +330,7 @@ def calculate_distances_wrcut(
 
 # Calculate all diahedral angles.
 @jit_(numba_parallel=True)
-def calculate_dihedral_angles(coords):
+def calculate_dihedral_angles(coords, pi_=array_(pi_), zero_=array_(0.0), one_=array_(1.0)):
     """
     For tensor element with indices i,j,k,l, stores angle between the triangle i,j,k
     and i,j,l.
@@ -366,9 +367,9 @@ def calculate_dihedral_angles(coords):
                         continue
                     norm_cross_prod2 = cross_(v0, coords[l] - coords[i]) / all_angles[i, i, j, l]
                     product = dot_(norm_cross_prod1, norm_cross_prod2)
-                    if abs_(product) > 1.0:
-                        if product > 0.0:
-                            angle = 0.0
+                    if abs_(product) > one_:
+                        if product > zero_:
+                            angle = zero_
                         else:
                             angle = pi_
                     else:

@@ -98,6 +98,8 @@ def hermitian_matrix_inverse_(mat):
 # special variables
 inf_ = np.inf
 isinf_ = np.isinf
+isnan_ = np.isnan
+tiny_ = np.finfo(float_).tiny
 # array constructors
 array_ = np.array
 empty_ = np.empty
@@ -201,3 +203,7 @@ def permuted_range_(n: int_):
     for i in range(n):
         output[i] = i
     return permutation_(output)
+
+
+# other
+reshape_ = np.reshape

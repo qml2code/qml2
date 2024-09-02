@@ -8,16 +8,24 @@ from ..dimensionality_reduction import (
     project_scale_local_representations,
 )
 from ..jit_interfaces import concatenate_, dint_, dot_, empty_, zeros_
-from ..kernels.gradient_kernels import (
-    get_energy_force_ranges,
-    prediction_vector_to_forces_energies,
-)
+from ..kernels.gradient_kernels import get_energy_force_ranges
 from ..kernels.gradient_sorf import (
     generate_local_force_sorf_processed_input,
     generate_local_force_sorf_product_processed_input,
 )
 from ..math import lu_solve
-from ..utils import check_allocation, get_atom_environment_ranges, get_element_ids_from_sorted
+from ..utils import (
+    check_allocation,
+    get_atom_environment_ranges,
+    get_element_ids_from_sorted,
+    multiply_transposed,
+)
+from .forces_utils import (
+    combine_energy_forces_rhs,
+    get_importance_multipliers,
+    merge_grad_lists,
+    prediction_vector_to_forces_energies,
+)
 from .krr_forces import OQMLModel
 from .sorf import SORFLocalModel
 
@@ -41,6 +49,7 @@ class SORFLocalForcesModel(SORFLocalModel, OQMLModel):
                 "nfeatures",
                 "ntransforms",
                 "l2reg_diag_ratio",
+                "use_rep_reduction" "sigma",
             ]
         }
         # all other keywords will go into OQMLModel init.
@@ -116,19 +125,18 @@ class SORFLocalForcesModel(SORFLocalModel, OQMLModel):
                 self.npcas,
                 true_nfeatures=self.nfeatures,
             )
-            if mult_vals is None:
-                used_Z = temp_Z
-            else:
-                used_Z = (temp_Z.T * mult_vals).T
+
+            if mult_vals is not None:
+                multiply_transposed(temp_Z, mult_vals)
 
             if self.num_Z_matrix_dumps is None:
-                self.temp_Z_matrix = used_Z
+                self.temp_Z_matrix = temp_Z
                 return
 
             dump_filename = self.dump_Z_dir.name + "/Z_dump_" + str(dump_id) + ".pkl"
 
             dump2pkl(
-                (feature_stack_lb, feature_stack_ub, feature_lb, feature_ub, used_Z),
+                (feature_stack_lb, feature_stack_ub, feature_lb, feature_ub, temp_Z),
                 dump_filename,
             )
             self.dumped_Z_pkl_files.append(dump_filename)
@@ -175,12 +183,12 @@ class SORFLocalForcesModel(SORFLocalModel, OQMLModel):
         training_energies,
         training_forces,
     ):
-        fitted_vals = self.combine_energy_forces_rhs(training_energies, training_forces)
+        fitted_vals = combine_energy_forces_rhs(training_energies, training_forces)
         if self.energy_importance is None:
             mult_vals = None
             used_fitted_vals = fitted_vals
         else:
-            mult_vals = self.get_importance_multipliers(atom_nums)
+            mult_vals = get_importance_multipliers(atom_nums, self.energy_importance)
             used_fitted_vals = fitted_vals * mult_vals
         element_ids = get_element_ids_from_sorted(all_nuclear_charges, self.sorted_elements)
         all_red_representations = project_local_representations(
@@ -206,31 +214,25 @@ class SORFLocalForcesModel(SORFLocalModel, OQMLModel):
             self.get_alphas_w_lambda(train_kernel, rhs, solver=lu_solve)
         self.run_clean_Z_matrix()
 
-    def train(
+    def train_from_rep_lists(
         self,
+        all_reps_list,
+        all_rep_grads_list,
+        all_rel_atoms_list,
+        all_rel_atom_nums_list,
         training_set_nuclear_charges,
-        training_set_coords,
         training_energies,
         training_forces,
         representative_atom_num=1024,
     ):
-        print("Calculating representations.")
-        (
-            all_reps,
-            atom_nums,
-            all_rep_grads,
-            all_rel_neighbors,
-            all_rel_neighbor_nums,
-        ) = self.get_all_representations_wgrads(
-            training_set_nuclear_charges,
-            training_set_coords,
-            suppress_openmp=self.training_reps_suppress_openmp,
-        )
-        print("Done")
         all_nuclear_charges = concatenate_(training_set_nuclear_charges)
         atom_nums = empty_((len(training_set_nuclear_charges),), dtype=dint_)
         for i, nuclear_charges in enumerate(training_set_nuclear_charges):
             atom_nums[i] = len(nuclear_charges)
+        all_reps = concatenate_(all_reps_list)
+        all_rep_grads, all_rel_neighbors, all_rel_neighbor_nums = merge_grad_lists(
+            all_rep_grads_list, all_rel_atoms_list, all_rel_atom_nums_list
+        )
         self.init_reductors_elements(
             all_reps,
             all_nuclear_charges,

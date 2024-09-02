@@ -119,7 +119,6 @@ def array_(
     torch_requires_grad: Optional[bool_] = False,
     dtype: optional_dtype_ = None,
 ):
-    # Additionally make sure tensor is stored on correct device.
     try:
         return torch.tensor(
             converted_array, device=torch_device, requires_grad=torch_requires_grad, dtype=dtype
@@ -287,6 +286,8 @@ def prange_(l: int_):
 # special variables
 inf_ = torch.inf
 isinf_ = torch.isinf
+isnan_ = torch.isnan
+tiny_ = torch.finfo(float_).tiny
 # important constants
 pi_ = tensor(torch.pi)
 # array lookup and manipulation
@@ -297,7 +298,7 @@ where_ = torch.where
 def elements_where_(val_arr, bool_arr):
     # because where_ in these situations causes problems with TorchScript.
     ids = where_(bool_arr)[0]
-    new_val_arr = copy_(val_arr[: int(ids[-1])])
+    new_val_arr = copy_(val_arr[: int(ids[-1]) + 1])
     j = 0
     for i in ids:
         new_val_arr[j] = val_arr[int(i)]
@@ -433,6 +434,9 @@ def all_tuple_dim_smaller_(t1: DimsSequenceType_, t2: DimsSequenceType_):
             return False
     return True
 
+
+# other
+reshape_ = torch.reshape
 
 if __name__ != "__main__":
     torch_default_device = checked_environ_val(torch_default_device_env_name, var_class=str)

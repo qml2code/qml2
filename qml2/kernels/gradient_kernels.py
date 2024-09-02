@@ -1,5 +1,3 @@
-from typing import Tuple
-
 from ..data import nCartDim
 from ..jit_interfaces import (
     dim0float_array_,
@@ -12,9 +10,8 @@ from ..jit_interfaces import (
     ndarray_,
     prange_,
     save_,
-    sum_,
 )
-from ..utils import check_allocation, get_atom_environment_ranges, l2_sq_norm
+from ..utils import get_atom_environment_ranges, l2_sq_norm
 from .kernels import half_inv_sq_sigma
 
 # KK: The module could be made more efficient, but TBH I think we should soon be switching to QMLightning anyway,
@@ -291,6 +288,10 @@ def construct_local_dn_oqml_kernel_asymmetric(
     ):
         sigma_param = sigma_to_param(sigma)
         nconfigs_A = A_reps.shape[0]
+
+        assert nconfigs_A == A_ncharges.shape[0]
+        assert B_reps.shape[0] == B_dreps.shape[0]
+
         nmols_B = nB.shape[0]
         nreps = A_reps.shape[1]
         ubound_arr_B = get_atom_environment_ranges(nB)
@@ -554,7 +555,7 @@ def local_dn_oqml_gaussian_kernel_symmetric(
     A, A_dreps, nA, A_ncharges, A_rel_neighbors, A_rel_neighbor_nums, sigma
 ):
     return local_dn_oqml_gaussian_kernel(
-        A, A, A_dreps, nA, nA, A_ncharges, A_ncharges, A_rel_neighbors, A_rel_neighbor_nums, sigma
+        A, A, A_dreps, nA, A_ncharges, A_ncharges, A_rel_neighbors, A_rel_neighbor_nums, sigma
     )
 
 
@@ -576,46 +577,3 @@ def local_dn_gp_gaussian_kernel_symmetric(
         None,
         sigma,
     )
-
-
-# For conveniently getting kernel element and derivative indices from force and gp kernels.
-@jit_
-def energy_forces_ids(
-    atom_nums: ndarray_, dint_: dtype_ = dint_, nCartDim: int_ = nCartDim
-) -> Tuple[ndarray_, ndarray_]:
-    nmols = atom_nums.shape[0]
-    energy_force_ranges = get_energy_force_ranges(atom_nums)
-    energy_ids = empty_((nmols,), dtype=dint_)
-    tot_natoms = int(sum_(atom_nums))
-    force_ids = empty_((tot_natoms, 2), dtype=dint_)
-    i_atom = 0
-    for i_mol in range(nmols):
-        en_id = energy_force_ranges[i_mol]
-        energy_ids[i_mol] = en_id
-        cur_lb = en_id + 1
-        for _ in range(int(atom_nums[i_mol])):
-            force_ids[i_atom, 0] = cur_lb
-            cur_lb += nCartDim
-            force_ids[i_atom, 1] = cur_lb
-            i_atom += 1
-    return energy_ids, force_ids
-
-
-@jit_
-def nen_force_vals(natoms, nCartDim: int_ = nCartDim):
-    return natoms.shape[0] + nCartDim * sum_(natoms)
-
-
-def prediction_vector_to_forces_energies(
-    prediction_vector, atom_nums, nmols, energy_output=None, forces_output=None
-):
-    used_atom_nums = atom_nums[:nmols]
-    tot_natoms = sum_(used_atom_nums)
-    energy_ids, force_ids = energy_forces_ids(used_atom_nums)
-    energy_output = check_allocation((nmols,), output=energy_output)
-    forces_output = check_allocation((tot_natoms, nCartDim), output=forces_output)
-    for en_count, energy_id in enumerate(energy_ids):
-        energy_output[en_count] = prediction_vector[energy_id]
-        for atom_count, force_bounds in enumerate(force_ids):
-            forces_output[atom_count, :] = prediction_vector[force_bounds[0] : force_bounds[1]]
-    return energy_output, forces_output

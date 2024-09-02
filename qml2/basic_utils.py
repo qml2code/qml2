@@ -4,12 +4,17 @@ import os
 import pickle
 import subprocess
 from copy import deepcopy
+from datetime import datetime
 
 from .data import NUCLEAR_CHARGE
 
 
 class OptionUnavailableError(Exception):
     pass
+
+
+def now():
+    return datetime.now()
 
 
 # For building many-parent classes.

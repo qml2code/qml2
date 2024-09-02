@@ -1,8 +1,6 @@
 # TODO K.Karan.: Need to check that the test set includes molecules larger in furthest atom distance than
 # cutoff distance for local representations. Use LJ random configurations?
-import random
-
-from conftest import add_checksum_to_dict, compare_or_create, perturbed_xyz_examples
+from conftest import add_checksum_to_dict, compare_or_create, int2rng, perturbed_xyz_examples
 
 from qml2 import Compound, CompoundList
 from qml2.jit_interfaces import array_, concatenate_
@@ -10,11 +8,13 @@ from qml2.jit_interfaces import array_, concatenate_
 ntest_mols = 2000
 
 
-def checksums_single_representation(rep_func_name, rng, checksums_storage, local=False):
+def checksums_single_representation(
+    rep_func_name, rng, checksums_storage, local=False, rep_kwargs={}
+):
     xyzs = perturbed_xyz_examples(rng, ntest_mols)
     compound_list = CompoundList([Compound(xyz=xyz) for xyz in xyzs])
     call = getattr(compound_list, rep_func_name)
-    call(test_mode=True)
+    call(test_mode=True, **rep_kwargs)
     all_representations = compound_list.all_representations()
     if local:
         merged_reps = concatenate_(all_representations)
@@ -45,7 +45,7 @@ def checksums_bob(rng, checksums_storage, **kwargs):
 def run_single_representation_test(rep_name, **kwargs):
     rep_func_name = "generate_" + rep_name
     checksums_storage = {}
-    checksums_rng = random.Random(1)
+    checksums_rng = int2rng(1)
     if rep_name == "bob":
         checksums_bob(checksums_rng, checksums_storage, **kwargs)
     else:
@@ -59,7 +59,7 @@ def test_coulomb_matrix():
 
 
 def test_fchl19():
-    run_single_representation_test("fchl19", local=True)
+    run_single_representation_test("fchl19", local=True, rep_kwargs={"rcut": 8.0, "acut": 12.0})
 
 
 def test_bob():

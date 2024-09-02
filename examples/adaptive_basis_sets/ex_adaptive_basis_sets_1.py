@@ -25,7 +25,7 @@ methane_opt_resc = methane_comp.ao_rescalings
 print("ao rescalings:", methane_opt_resc)
 
 # Re-run them without adaptive basis.
-methane_comp.mats_saved = False  # ignore previousy calculated results
+methane_comp.mats_created = False  # ignore previousy calculated results
 methane_comp.ao_rescalings = None
 methane_comp.optimize_ao_rescalings = False
 methane_comp.run_calcs()
@@ -49,6 +49,6 @@ for nc in ethane_comp.nuclear_charges:
     ethane_rescalings.append(resc)
 
 ethane_comp.ao_rescalings = ethane_rescalings
-ethane_comp.mats_saved = False
+ethane_comp.mats_created = False
 ethane_comp.run_calcs()
 print("Ethane energy with basis optimal for methane:", ethane_comp.e_tot)

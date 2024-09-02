@@ -2,9 +2,13 @@ from ..data import nCartDim
 from ..jit_interfaces import (
     array_,
     dim0float_array_,
+    dint_,
+    dtype_,
+    empty_,
     int_,
     jit_,
     l2_norm_,
+    randint_,
     random_,
     standard_normal_,
     zeros_,
@@ -66,3 +70,21 @@ def random_lj_configuration(
                 min_dist + (max_dist - min_dist) * random_()
             )
     return output
+
+
+@jit_
+def random_lj_molecule(
+    natoms_min: int_,
+    natoms_max: int_,
+    possible_nuclear_charges=array_([1, 3]),
+    min_dist: dim0float_array_ = array_(0.75),
+    max_dist: dim0float_array_ = array_(1.5),
+    dint_: dtype_ = dint_,
+):
+    nelements = len(possible_nuclear_charges)
+    natoms = int(randint_(natoms_min, natoms_max + 1))
+    element_ids = randint_(0, nelements, (natoms,))
+    nuclear_charges = empty_((natoms,), dtype=dint_)
+    for atom_id in range(natoms):
+        nuclear_charges[atom_id] = possible_nuclear_charges[element_ids[atom_id]]
+    return nuclear_charges, random_lj_configuration(natoms, min_dist=min_dist, max_dist=max_dist)

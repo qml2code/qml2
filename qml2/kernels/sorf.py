@@ -89,7 +89,7 @@ def hadamard_norm_const(init_size: int_) -> ndarray_:
 # Normalization of the Random Fourier Feature vector as appearing in Eq.~(14) of the QML-Lightning arXiv.
 @jit_
 def rff_vec_norm_const(nfeatures: int_) -> ndarray_:
-    return sqrt_(2.0 / array_jittable_(nfeatures))
+    return sqrt_(2.0 / array_jittable_(float(nfeatures)))
 
 
 # Taken from https://en.wikipedia.org/wiki/Fast_Walsh%E2%80%93Hadamard_transform.
@@ -277,11 +277,9 @@ def generate_sorf(
     """
     if reductor is None:
         assert representations.shape[1] <= init_size
-        reduced_scaled_representations = representations / sigma
-    else:
-        reduced_scaled_representations = project_scale_representations(
-            representations, reductor, sigma
-        )
+    reduced_scaled_representations = project_scale_representations(
+        representations, reductor, sigma
+    )
     out_shape = (representations.shape[0], init_size * nfeature_stacks)
     out = check_allocation(out_shape, out)
     generate_sorf_processed_input(
@@ -333,11 +331,9 @@ def generate_local_sorf(
     all_element_ids = get_element_ids_from_sorted(ncharges, sorted_elements)
     if reductors is None:
         assert representations.shape[1] <= init_size
-        reduced_scaled_representations = representations / sigma
-    else:
-        reduced_scaled_representations = project_scale_local_representations(
-            representations, all_element_ids, reductors, sigma
-        )
+    reduced_scaled_representations = project_scale_local_representations(
+        representations, all_element_ids, reductors, sigma
+    )
     out_shape = (natoms.shape[0], init_size * nfeature_stacks)
 
     out = check_allocation(out_shape, out)

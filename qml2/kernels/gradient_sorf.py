@@ -3,10 +3,10 @@
 # The routines for calculating products of Z with alpha vector should be close to optimal though,
 # which is the important part of doing model predictions.
 
-from typing import Tuple
+from typing import Tuple, Union
 
 from ..data import nCartDim
-from ..dimensionality_reduction import project_scale_local_representations
+from ..dimensionality_reduction import choose_reductor, project_scale_local_representations
 from ..jit_interfaces import (
     cos_,
     dim0float_array_,
@@ -20,7 +20,7 @@ from ..jit_interfaces import (
     save_,
     sin_,
 )
-from ..utils import get_atom_environment_ranges, get_element_ids_from_sorted
+from ..utils import check_allocation, get_atom_environment_ranges, get_element_ids_from_sorted
 from .gradient_kernels import add_force_kernel_contributions, get_energy_force_ranges
 from .sorf import (
     fast_walsh_hadamard,
@@ -50,7 +50,7 @@ def add_sorf_func_forces(
     rel_neighbors,
     rel_neighbor_num: int_,
     sorf_diags,
-    reductor,
+    reductor: Union[None, ndarray_],
     norm_const,
     temp_rff_ders,
     kernel_output,
@@ -64,7 +64,10 @@ def add_sorf_func_forces(
 
     temp_rff_ders /= norm_const
     # Do backward of reduction.
-    rff_rep_der = dot_(reductor, temp_rff_ders)
+    if reductor is None:
+        rff_rep_der = temp_rff_ders
+    else:
+        rff_rep_der = dot_(reductor, temp_rff_ders)
     # NOTE: rff_rep_der still needs to be rescaled by sigma; it is done globally.
     # add gradient components corresponding to rff_rep_der.
     add_force_kernel_contributions(
@@ -82,7 +85,7 @@ def add_force_sorf_func(
     temp_rff_der,
     sorf_diags,
     biases,
-    reductor,
+    reductor: Union[None, ndarray_],
     norm_const,
     kernel_products,
     kernel_product_derivatives,
@@ -125,7 +128,7 @@ def add_product_force_sorf_func(
     temp_rff_der,
     sorf_diags,
     biases,
-    reductor,
+    reductor: Union[None, ndarray_],
     norm_const: dim0float_array_,
     kernel_component,
     alphas,
@@ -160,7 +163,7 @@ def generate_local_force_sorf_func(
     element_ids,
     sorf_diags,
     biases,
-    reductors,
+    reductors: Union[None, ndarray_],
     norm_const,
     natoms: int_,
     kernel_products,
@@ -179,7 +182,7 @@ def generate_local_force_sorf_func(
             temp_rff_der,
             sorf_diags[el_id],
             biases[el_id],
-            reductors[el_id],
+            choose_reductor(reductors, el_id),
             norm_const,
             kernel_products,
             kernel_product_derivatives,
@@ -198,7 +201,7 @@ def generate_local_force_sorf_product_func(
     element_ids,
     sorf_diags,
     biases,
-    reductors,
+    reductors: Union[None, ndarray_],
     norm_const,
     natoms: int_,
     kernel_component,
@@ -216,7 +219,7 @@ def generate_local_force_sorf_product_func(
             temp_rff_der,
             sorf_diags[el_id],
             biases[el_id],
-            reductors[el_id],
+            choose_reductor(reductors, el_id),
             norm_const,
             kernel_component,
             alphas,
@@ -240,14 +243,14 @@ def generate_local_force_sorf_processed_input(
     element_ids,
     all_sorf_diags,
     all_biases,
-    all_reductors,
+    all_reductors: Union[None, ndarray_],
     sigma,
     kernel,
     en_force_ranges_arr,
     mol_ubound_arr,
     nfeature_stacks: int_,
     init_size: int_,
-    true_nfeatures: int_ = None,
+    true_nfeatures: Union[int_, None] = None,
     nCartDim: int_ = nCartDim,
 ):
     assert reduced_scaled_representations.shape[0] == element_ids.shape[0]
@@ -255,7 +258,7 @@ def generate_local_force_sorf_processed_input(
     # KK: not %100 sure it's necessary
     assert max_(element_ids) <= all_sorf_diags.shape[0]
 
-    assert init_size == reduced_scaled_representations.shape[1]
+    assert reduced_scaled_representations.shape[1] <= init_size
 
     norm_const = hadamard_norm_const(init_size)
 
@@ -312,9 +315,11 @@ def generate_local_force_sorf_processed_input(
                 product_derivative_lb = product_derivative_ub
 
     if true_nfeatures is None:
-        true_nfeatures = nfeatures
+        rff_nc = rff_vec_norm_const(nfeatures)
+    else:
+        rff_nc = rff_vec_norm_const(true_nfeatures)
 
-    kernel[:, :] *= rff_vec_norm_const(true_nfeatures)  # normalization
+    kernel[:, :] *= rff_nc  # normalization
 
 
 @jit_
@@ -326,17 +331,17 @@ def generate_local_force_sorf_product_full_stack(
     element_ids,
     stack_sorf_diags,
     stack_biases,
-    all_reductors,
+    all_reductors: Union[None, ndarray_],
     norm_const,
     sigma,
     stack_alphas,
     mol_ubound_arr,
     en_force_ranges_arr,
+    init_size: int_,
 ):
-    nred_reps = reduced_scaled_representations.shape[1]
     output = empty_((int(en_force_ranges_arr[-1]),))
-    temp_red_reps = empty_((nred_reps,))
-    temp_rff_der = empty_((nred_reps,))
+    temp_red_reps = empty_((init_size,))
+    temp_rff_der = empty_((init_size,))
     for mol_id in range(int(mol_ubound_arr.shape[0]) - 1):
         lb_mol = mol_ubound_arr[mol_id]
         ub_mol = mol_ubound_arr[mol_id + 1]
@@ -373,7 +378,7 @@ def generate_local_force_sorf_product_processed_input(
     element_ids,
     all_sorf_diags,
     all_biases,
-    all_reductors,
+    all_reductors: Union[None, ndarray_],
     sigma,
     output_vector,
     alphas,
@@ -408,6 +413,7 @@ def generate_local_force_sorf_product_processed_input(
             alphas[rff_lb:rff_ub],
             mol_ubound_arr,
             en_force_ranges_arr,
+            init_size,
         )
         # reduce over parallel execution
         output_vector += temp_output_vector
@@ -422,21 +428,24 @@ def generate_local_force_sorf(
     na,
     relevant_neighbors,
     relevant_neighbor_nums,
-    reductors,
     sorted_elements,
     all_sorf_diags,
     all_biases,
-    kernel,
     sigma: dim0float_array_,
     nfeature_stacks: int,
     init_size: int,
+    reductors: Union[None, ndarray_] = None,
+    out: Union[None, ndarray_] = None,
 ):
     ubound_arr = get_atom_environment_ranges(na)
     en_force_ranges = get_energy_force_ranges(na)
     all_element_ids = get_element_ids_from_sorted(ncharges, sorted_elements)
+    if reductors is None:
+        assert representations.shape[1] <= init_size
     reduced_scaled_representations = project_scale_local_representations(
         representations, all_element_ids, reductors, sigma
     )
+    out = check_allocation((en_force_ranges[-1], init_size * nfeature_stacks), output=out)
     generate_local_force_sorf_processed_input(
         reduced_scaled_representations,
         representation_gradients,
@@ -447,15 +456,16 @@ def generate_local_force_sorf(
         all_biases,
         reductors,
         sigma,
-        kernel,
+        out,
         en_force_ranges,
         ubound_arr,
         nfeature_stacks,
         init_size,
     )
+    return out
 
 
-@jit_(numba_parallel=True)
+@jit_
 def generate_local_force_sorf_product(
     representations,
     representation_gradients,
@@ -463,22 +473,25 @@ def generate_local_force_sorf_product(
     natoms,
     relevant_neighbors,
     relevant_neighbor_nums,
-    reductors,
     sorted_elements,
     all_sorf_diags,
     all_biases,
-    output_vector,
     alphas,
     sigma: dim0float_array_,
     nfeature_stacks: int,
     init_size: int,
+    reductors: Union[None, ndarray_] = None,
+    out: Union[None, ndarray_] = None,
 ):
     ubound_arr = get_atom_environment_ranges(natoms)
     en_force_ranges = get_energy_force_ranges(natoms)
     all_element_ids = get_element_ids_from_sorted(ncharges, sorted_elements)
+    if reductors is None:
+        assert representations.shape[1] <= init_size
     reduced_scaled_representations = project_scale_local_representations(
         representations, all_element_ids, reductors, sigma
     )
+    out = check_allocation((en_force_ranges[-1],), output=out)
     generate_local_force_sorf_product_processed_input(
         reduced_scaled_representations,
         representation_gradients,
@@ -489,10 +502,11 @@ def generate_local_force_sorf_product(
         all_biases,
         reductors,
         sigma,
-        output_vector,
+        out,
         alphas,
         en_force_ranges,
         ubound_arr,
         nfeature_stacks,
         init_size,
     )
+    return out

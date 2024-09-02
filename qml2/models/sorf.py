@@ -32,7 +32,9 @@ def is_power2(n: int):
 
 
 class SORFModel(KRRModel):
-    def __init__(self, npcas=128, nfeatures=None, ntransforms=2, **other_kwargs):
+    def __init__(
+        self, npcas=128, nfeatures=None, ntransforms=2, use_rep_reduction=False, **other_kwargs
+    ):
         # feature size
         KRRModel.__init__(self, **other_kwargs)
         assert is_power2(npcas)
@@ -43,6 +45,7 @@ class SORFModel(KRRModel):
             self.nfeature_stacks = self.nfeatures // self.npcas
         self.ntransforms = ntransforms
         self.temp_reduced_scaled_reps = None
+        self.use_rep_reduction = use_rep_reduction
         self.init_internal_feature_parameters()
 
     def init_kernel_functions(self, *args, **kwargs):
@@ -75,9 +78,10 @@ class SORFModel(KRRModel):
             self.nfeatures = self.nfeature_stacks * self.ncpas
 
     def init_reductor(self, training_representations, representative_atom_num=1024):
-        self.reductor = get_reductor(
-            training_representations, self.npcas, num_samples=representative_atom_num
-        )
+        if self.use_rep_reduction:
+            self.reductor = get_reductor(
+                training_representations, self.npcas, num_samples=representative_atom_num
+            )
 
     def reference_diag_ids(self):
         r = array_(list(range(self.nfeatures)))
@@ -224,7 +228,7 @@ class SORFLocalModel(SORFModel, KRRLocalModel):
     def init_reductors_elements(
         self, training_representations, training_nuclear_charges, representative_atom_num=1024
     ):
-        if self.all_reductors is not None:
+        if (self.all_reductors is not None) or (not self.use_rep_reduction):
             return
         self.all_reductors, found_sorted_elements = get_reductors_diff_species(
             training_representations, training_nuclear_charges, self.npcas, representative_atom_num

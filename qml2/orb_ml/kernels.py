@@ -328,8 +328,11 @@ class OML_KernelInput:
             orb_rep_ubound = 0
             num_mol_areps = 0
 
-            for orb in mol_orbs:
+            for orb_id, orb in enumerate(mol_orbs):
                 self.orb_weights.append(orb.rho)
+                if self.pair_rep:
+                    if orb_id < len(comp.comps[0].orb_reps):
+                        self.orb_weights[-1] *= -1
                 areps = orb.orb_atom_reps
                 nareps = len(areps)
                 orb_rep_ubound += nareps

@@ -1,9 +1,12 @@
 # Test QML2's implementation of basis set optimization procedures.
 
-import random
-
 import pytest
-from conftest import add_checksum_to_dict, compare_or_create, perturbed_xyz_nhatoms_interval
+from conftest import (
+    add_checksum_to_dict,
+    compare_or_create,
+    int2rng,
+    perturbed_xyz_nhatoms_interval,
+)
 
 from qml2.jit_interfaces import array_, log_
 
@@ -51,7 +54,7 @@ def test_optimize_basis_sets():
     custom_log_rescalings = all_log_rescalings(example_compounds_custom_rescaling)
 
     checksums_storage = {}
-    checksums_rng = random.Random(4)
+    checksums_rng = int2rng(4)
 
     add_checksum_to_dict(
         checksums_storage,

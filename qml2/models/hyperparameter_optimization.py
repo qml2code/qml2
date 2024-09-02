@@ -4,48 +4,73 @@ from numpy import ndarray
 from scipy.linalg import cho_factor, cho_solve, svd
 from scipy.optimize import bisect
 
+from ..basic_utils import now
+from ..math import cho_solve as cho_solve_full
 from ..math import solve_from_svd
 from ..utils import get_atom_environment_ranges, l2_norm_sq_dist
 
 
 # Separating sets into training and test.
 # training_test_atomic_separator - to separate individual atoms in a way that atoms from same molecule are all in one set.
-def training_test_mol_separator(total_set_size, training_set_size):
-    shuffled_mols = np.array(range(total_set_size), dtype=int)
-    np.random.shuffle(shuffled_mols)
-    return shuffled_mols, training_set_size
+def training_test_mols(total_set_size, training_set_size, nkfolds):
+    temp_id_arr = np.array(range(total_set_size), dtype=int)
+    shuffled_mols = np.empty((nkfolds, total_set_size), dtype=int)
+    set_separators = np.repeat(training_set_size, nkfolds)
+    for kfold_id in range(nkfolds):
+        np.random.shuffle(temp_id_arr)
+        shuffled_mols[kfold_id, :] = temp_id_arr[:]
+    return shuffled_mols, set_separators
 
 
-def training_test_atomic_separator(
-    total_set_size: int, mol_set_size, mol_training_set_size: int, atom_numbers: ndarray
+def training_test_mol_observables(
+    mol_observable_numbers: ndarray,
+    mol_set_size=None,
+    mol_training_set_size=None,
+    mol_kfolds=None,
+    nkfolds=None,
 ):
-    shuffled_mols, mol_separator = training_test_mol_separator(mol_set_size, mol_training_set_size)
-    shuffled_atoms = np.empty((total_set_size,), dtype=int)
-    ubound_arr = get_atom_environment_ranges(atom_numbers)
-    shuffled_atoms_separator = None
-    atom_counter = 0
-    for set_id, mol_id in enumerate(shuffled_mols):
-        if set_id == mol_separator:
-            shuffled_atoms_separator = atom_counter
-        for atom_id in range(ubound_arr[mol_id], ubound_arr[mol_id + 1]):
-            shuffled_atoms[atom_counter] = atom_id
-            atom_counter += 1
-    assert shuffled_atoms_separator is not None
-    assert atom_counter == total_set_size
-    return shuffled_atoms, shuffled_atoms_separator
+    if mol_kfolds is None:
+        shuffled_mols, mol_set_separators = training_test_mols(
+            mol_set_size, mol_training_set_size, nkfolds
+        )
+    else:
+        shuffled_mols = mol_kfolds.all_shuffled_indices
+        mol_set_separators = mol_kfolds.all_training_test_set_separators
+    total_set_size = sum(mol_observable_numbers)
+    if nkfolds is None:
+        nkfolds = shuffled_mols.shape[0]
+
+    shuffled_observables = np.empty(
+        (
+            nkfolds,
+            total_set_size,
+        ),
+        dtype=int,
+    )
+    ubound_arr = get_atom_environment_ranges(mol_observable_numbers)
+    shuffled_observables_separators = np.repeat(-1, nkfolds)
+    for kfold_id in range(nkfolds):
+        observable_counter = 0
+        for set_id, mol_id in enumerate(shuffled_mols[kfold_id]):
+            if set_id == mol_set_separators[kfold_id]:
+                shuffled_observables_separators[kfold_id] = observable_counter
+            for observable_id in range(ubound_arr[mol_id], ubound_arr[mol_id + 1]):
+                shuffled_observables[kfold_id, observable_counter] = observable_id
+                observable_counter += 1
+    assert np.all(shuffled_observables_separators >= 0)
+    assert observable_counter == total_set_size
+    return shuffled_observables, shuffled_observables_separators
 
 
 # Creating k-folds.
 # KK: Is there a standardised k-fold generator that allows training_test_atomic_separator usage?
-class KFold:
+class KFolds:
     def __init__(
         self,
         total_set_size,
         nkfolds,
         training_set_ratio=0.5,
         training_set_size=None,
-        kfold_creator=training_test_mol_separator,
-        kfold_creator_args=None,
     ):
         """
         Stores indices of KFolds for hyperparameter optimization.
@@ -54,57 +79,33 @@ class KFold:
         self.nkfolds = nkfolds
         self.training_set_size = training_set_size
         if (self.training_set_size is None) and (training_set_ratio is not None):
-            self.training_set_size = training_set_ratio * total_set_size
+            self.training_set_size = int(training_set_ratio * total_set_size)
         self.all_shuffled_indices = None
         self.all_training_test_set_separators = None
-        self.kfold_creator = kfold_creator
-        if kfold_creator_args is None:
-            self.kfold_creator_args = (self.total_set_size, self.training_set_size)
-        else:
-            self.kfold_creator_args = kfold_creator_args
-        self.init_kfold_indices()
-
-    def init_kfold_indices(self):
-        if self.all_shuffled_indices is not None:
-            return
-        self.all_shuffled_indices = np.empty((self.nkfolds, self.total_set_size), dtype=int)
-        self.all_training_test_set_separators = np.empty((self.nkfolds,), dtype=int)
-        for kfold_id in range(self.nkfolds):
-            (
-                self.all_shuffled_indices[kfold_id, :],
-                self.all_training_test_set_separators[kfold_id],
-            ) = self.kfold_creator(*self.kfold_creator_args)
-
-
-class KFoldAtomic(KFold):
-    def __init__(
-        self, mol_set_size, atom_numbers, nkfolds, training_set_ratio=0.5, training_set_size=None
-    ):
-        """
-        Stores indices of KFolds composed of individual atoms for hyperparameter optimization.
-        """
-        self.mol_set_size = mol_set_size
-        self.atom_numbers = atom_numbers
-        total_set_size = sum(atom_numbers)
-        self.mol_training_set_ratio = training_set_ratio
-        if self.training_set_size is None:
-            assert training_set_ratio is not None
-            self.mol_training_set_size = training_set_ratio * self.mol_ste_size
-        else:
-            self.mol_training_set_size = training_set_size
-        self.atom_numbers = atom_numbers
-        kfold_creator_args = (
-            total_set_size,
-            self.mol_set_size,
-            self.mol_training_set_size,
-            self.atom_numbers,
+        self.all_shuffled_indices, self.all_training_test_set_separators = training_test_mols(
+            self.total_set_size, self.training_set_size, nkfolds
         )
-        super().__init__(
-            total_set_size,
-            nkfolds,
-            kfold_creator=training_test_atomic_separator,
-            kfold_creator_args=kfold_creator_args,
-        )
+
+    def train_test_indices(self, kfold_id):
+        shuffled_indices = self.all_shuffled_indices[kfold_id]
+        separator = self.all_training_test_set_separators[kfold_id]
+        return shuffled_indices[:separator], shuffled_indices[separator:]
+
+
+class KFoldsMultipleObservables(KFolds):
+    def __init__(self, mol_observable_numbers, mol_kfolds=None, nkfolds=None, **kwargs):
+        """
+        Stores indices of KFolds for case when many observables are available for one molecule.
+        """
+        self.total_set_size = np.sum(mol_observable_numbers)
+        self.mol_set_size = len(mol_observable_numbers)
+        if mol_kfolds is None:
+            mol_kfolds = KFolds(self.mol_set_size, nkfolds, **kwargs)
+        (
+            self.all_shuffled_indices,
+            self.all_training_test_set_separators,
+        ) = training_test_mol_observables(mol_observable_numbers, mol_kfolds=mol_kfolds)
+        self.nkfolds = mol_kfolds.nkfolds
 
 
 # For optimizing lambda in KRR without recalculating the kernel.
@@ -138,7 +139,7 @@ def MAE_lambda_derivative(train_kernel, train_values, test_kernel, test_values, 
 
 
 # @njit(fastmath=True)
-def KFold_MAE_lambda_derivative_mod_kernel(
+def KFolds_MAE_lambda_derivative_mod_kernel(
     full_kernel, all_values, all_shuffled_indices, all_separators, nkfolds
 ):
     av_MAE = 0.0
@@ -161,7 +162,7 @@ def KFold_MAE_lambda_derivative_mod_kernel(
 
 
 # @njit(fastmath=True)
-def KFold_MAE_log_lambda_derivative(
+def KFolds_MAE_log_lambda_derivative(
     full_kernel,
     all_values,
     all_shuffled_indices,
@@ -176,7 +177,7 @@ def KFold_MAE_log_lambda_derivative(
     for diag_id in range(num_points):
         saved_diag_vals[diag_id] = full_kernel[diag_id, diag_id]
         full_kernel[diag_id, diag_id] += lambda_val
-    av_MAE, av_MAE_der, valid = KFold_MAE_lambda_derivative_mod_kernel(
+    av_MAE, av_MAE_der, valid = KFolds_MAE_lambda_derivative_mod_kernel(
         full_kernel, all_values, all_shuffled_indices, all_separators, nkfolds
     )
     for diag_id in range(num_points):
@@ -184,10 +185,10 @@ def KFold_MAE_log_lambda_derivative(
     return av_MAE, av_MAE_der / lambda_val, valid
 
 
-def KFold_MAE_optimized_lambda(
+def KFolds_MAE_optimized_lambda(
     full_kernel: ndarray,
     all_values: ndarray,
-    kfold: KFold,
+    kfold: KFolds,
     lambda_log_precision=0.1,
     lambda_init_guess=1.0e-6,
     lambda_log_stride=np.log(4.0),
@@ -207,7 +208,7 @@ def KFold_MAE_optimized_lambda(
 
         def __call__(self, log_lambda_val):
             self.call_counter += 1
-            return KFold_MAE_log_lambda_derivative(
+            return KFolds_MAE_log_lambda_derivative(
                 full_kernel,
                 all_values,
                 kfold.all_shuffled_indices,
@@ -268,10 +269,15 @@ class callable_MAE_w_opt_lambda:
         nkfolds=8,
         training_set_ratio=0.5,
     ):
+        """
+        For optimization of sigma in KRR in such a way that for each kernel
+        matrix calculation lambda value is found via bisection. Useful for
+        methods where kernel calculations are expensive.
+        """
         self.last_used_lambda = lambda_init
         self.train_kernel_generator = train_kernel_generator
         self.train_vals = train_vals
-        self.kfold = KFold(len(self.train_vals), nkfolds, training_set_ratio=training_set_ratio)
+        self.kfold = KFolds(len(self.train_vals), nkfolds, training_set_ratio=training_set_ratio)
         self.MAE_lambda_log = []
 
     def lambda_init_guess(self, params):
@@ -283,7 +289,7 @@ class callable_MAE_w_opt_lambda:
     def __call__(self, parameters):
         params = parameters[0]
         sym_matrix = self.train_kernel_generator(params)
-        MAE, self.last_used_lambda, num_evals = KFold_MAE_optimized_lambda(
+        MAE, self.last_used_lambda, num_evals = KFolds_MAE_optimized_lambda(
             sym_matrix,
             self.train_vals,
             self.kfold,
@@ -297,6 +303,149 @@ class callable_MAE_w_opt_lambda:
 
     def smallest_encountered_MAE(self):
         return min(self.MAE_lambda_log, key=lambda x: x[0])[:3]
+
+
+# For BO in space of both lambda and sigma.
+class callable_ninv_MAE:
+    def __init__(
+        self,
+        symmetric_kernel_function,
+        training_representations,
+        training_quantities,
+        kernel_function_kwargs={},
+        nkfolds=8,
+        training_set_ratio=0.5,
+    ):
+        """
+        For optimization of sigma and lambda.
+        """
+        self.init_training_set(training_representations, training_quantities)
+        self.init_kernel(symmetric_kernel_function, kernel_function_kwargs)
+        self.init_kfolds(nkfolds=nkfolds, training_set_ratio=training_set_ratio)
+
+    def init_kernel(self, symmetric_kernel_function, kernel_function_kwargs):
+        self.symmetric_kernel_function = symmetric_kernel_function
+        self.kernel_function_kwargs = kernel_function_kwargs
+
+    def init_training_set(self, training_representations, training_quantities):
+        self.training_representations = training_representations
+        self.training_quantities = training_quantities
+        self.training_set_size = len(self.training_representations)
+
+    def init_kfolds(self, nkfolds=8, training_set_ratio=0.5):
+        self.nkfolds = nkfolds
+        self.kfolds = KFolds(
+            len(self.training_quantities), self.nkfolds, training_set_ratio=training_set_ratio
+        )
+
+    def get_full_kernel_matrix(self, sigma):
+        return self.symmetric_kernel_function(
+            self.training_representations, sigma, **self.kernel_function_kwargs
+        )
+
+    def __call__(self, ln_parameters):
+        """
+        Calculate mean MAE over all kfolds and returns the negative inverse of it. If for at least one MAE
+        the training matrix is non-invertible returns zero.
+
+        input:
+        ln_parameters : array of shape (2,), parameters[0] is logarithm of the ratio of lambda and mean diagonal
+                        element of the kernel matrix calculated for all training representations; parameters[1]
+                        is logarithm of sigma.
+        output:
+        ninv_MAE : negative inverse of MAE averaged over all kfolds. If at least one MAE cannot be evaluated
+                    due to training matrix being non-invertible returns 0.
+        """
+        print("started MAE calculation for:", ln_parameters, now())
+        normalized_lambda, sigma = np.exp(ln_parameters[0])
+
+        full_kernel_matrix = self.get_full_kernel_matrix(sigma)
+        lambda_val = normalized_lambda * np.mean(np.diagonal(full_kernel_matrix))
+        full_kernel_matrix[np.diag_indices_from(full_kernel_matrix)] += lambda_val
+
+        tot_MAE = 0.0
+        for kfold_id in range(self.nkfolds):
+            train_indices, test_indices = self.kfolds.train_test_indices(kfold_id)
+            kfold_train_kernel = full_kernel_matrix[train_indices][:, train_indices]
+            kfold_test_kernel = full_kernel_matrix[test_indices][:, train_indices]
+            kfold_train_quantities = self.training_quantities[train_indices]
+            try:
+                kfold_alphas = cho_solve_full(kfold_train_kernel, kfold_train_quantities)
+            except np.linalg.LinAlgError:
+                return 0.0
+            kfold_predictions = np.dot(kfold_test_kernel, kfold_alphas)
+            tot_MAE += np.mean(np.abs(kfold_predictions - self.training_quantities[test_indices]))
+        av_MAE = tot_MAE / self.nkfolds
+        print("finished calculations:", av_MAE, now())
+        return -1 / av_MAE
+
+
+class callable_ninv_MAE_local(callable_ninv_MAE):
+    def __init__(
+        self,
+        symmetric_kernel_function,
+        training_representations_list,
+        training_quantities,
+        kernel_function_kwargs={},
+        **kfolds_kwargs
+    ):
+        """
+        For optimization of sigma and lambda.
+        """
+        self.init_training_set(training_representations_list, training_quantities)
+        self.init_kernel(symmetric_kernel_function, kernel_function_kwargs)
+        self.init_kfolds(**kfolds_kwargs)
+
+    def init_training_set(self, training_representations_list, training_quantities):
+        self.training_representations = np.concatenate(training_representations_list)
+        self.training_natoms = np.array([len(rep) for rep in training_representations_list])
+        self.training_set_size = self.training_natoms.shape[0]
+        if training_quantities is not None:
+            self.training_quantities = training_quantities
+            self.num_observables = len(self.training_quantities)
+
+    def get_full_kernel_matrix(self, sigma):
+        return self.symmetric_kernel_function(
+            self.training_representations,
+            self.training_natoms,
+            sigma,
+            **self.kernel_function_kwargs
+        )
+
+
+class callable_ninv_MAE_local_dn(callable_ninv_MAE_local):
+    def __init__(
+        self,
+        symmetric_kernel_function,
+        training_representations_list,
+        training_nuclear_charges_list,
+        training_quantities,
+        kernel_function_kwargs={},
+        **kfolds_kwargs
+    ):
+        """
+        For optimization of sigma and lambda.
+        """
+        self.init_training_set(
+            training_representations_list, training_nuclear_charges_list, training_quantities
+        )
+        self.init_kfolds(**kfolds_kwargs)
+        self.init_kernel(symmetric_kernel_function, kernel_function_kwargs)
+
+    def init_training_set(
+        self, training_representations_list, training_nuclear_charges_list, training_quantities
+    ):
+        super().init_training_set(training_representations_list, training_quantities)
+        self.training_nuclear_charges = np.concatenate(training_nuclear_charges_list)
+
+    def get_full_kernel_matrix(self, sigma):
+        return self.symmetric_kernel_function(
+            self.training_representations,
+            self.training_natoms,
+            self.training_nuclear_charges,
+            sigma,
+            **self.kernel_function_kwargs
+        )
 
 
 def GPR_MLL_single_quantity(cholesky_factorization, train_quantities):

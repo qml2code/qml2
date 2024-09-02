@@ -1,7 +1,6 @@
 import importlib
-import random
 
-from conftest import add_checksum_to_dict, compare_or_create, randint_arr, random_arr, str2rng
+from conftest import add_checksum_to_dict, compare_or_create, int2rng, str2rng
 
 from qml2.models.hyperparameter_init_guesses import vector_std
 
@@ -36,9 +35,9 @@ def run_global_kernels_test(
 ):
     imported_kernels = get_imported_kernels(module_name)
     checksums_storage = {}
-    test_input_rng = random.Random(1)
-    A = random_arr((nA, repsize), test_input_rng)
-    B = random_arr((nB, repsize), test_input_rng)
+    test_input_rng = int2rng(1)
+    A = test_input_rng.random((nA, repsize))
+    B = test_input_rng.random((nB, repsize))
     # get some reasonable sigma value
     sigma = vector_std(B)
     for kernel_function_tuple in kernel_functions:
@@ -91,17 +90,17 @@ def run_local_kernels_test(
 ):
     imported_kernels = get_imported_kernels(module_name)
     checksums_storage = {}
-    test_input_rng = random.Random(1)
-    nA = randint_arr(1, 16, (24,), test_input_rng)
-    nB = randint_arr(1, 32, (32,), test_input_rng)
+    test_input_rng = int2rng(1)
+    nA = test_input_rng.integers(1, 16, (24,))
+    nB = test_input_rng.integers(1, 32, (32,))
     tot_nA = sum(nA)
     tot_nB = sum(nB)
 
-    ncharges_A = randint_arr(1, 3, (tot_nA,), test_input_rng)
-    ncharges_B = randint_arr(1, 3, (tot_nB,), test_input_rng)
+    ncharges_A = test_input_rng.integers(1, 3, (tot_nA,))
+    ncharges_B = test_input_rng.integers(1, 3, (tot_nB,))
 
-    A = random_arr((tot_nA, repsize), test_input_rng)
-    B = random_arr((tot_nB, repsize), test_input_rng)
+    A = test_input_rng.random((tot_nA, repsize))
+    B = test_input_rng.random((tot_nB, repsize))
     # get some reasonable sigma value
     sigma = vector_std(B)
     for kernel_function_tuple in kernel_functions:

@@ -116,41 +116,81 @@ def project_representation(X, reductor):
 
 @jit_
 def project_scale_representations(
-    X, reductor, sigma, output: Union[ndarray_, None] = None, nmols: int_ = -1
+    X,
+    reductor: Union[ndarray_, None],
+    sigma,
+    output: Union[ndarray_, None] = None,
+    nmols: int_ = -1,
 ):
-    npcas = reductor.shape[1]
+    if reductor is None:
+        output_dim2 = X.shape[1]
+    else:
+        output_dim2 = reductor.shape[1]
     if nmols == -1:
         nmols = X.shape[0]
-    output = check_allocation((nmols, npcas), output=output)
-    output[:nmols, :] = project_representation(X, reductor) / sigma
+
+    output = check_allocation((nmols, output_dim2), output=output)
+    if reductor is None:
+        output[:nmols, :] = X / sigma
+    else:
+        output[:nmols, :] = project_representation(X, reductor) / sigma
     return output
 
 
+@jit_
+def choose_reductor(reductors: Union[None, ndarray_], el_id: int_):
+    if reductors is None:
+        return None
+    else:
+        return reductors[el_id]
+
+
 @jit_(numba_parallel=True)
-def project_local_representations(
+def project_local_representations_passed_reductors_check(
     all_X, element_ids, all_reductors, output: Union[ndarray_, None] = None, natoms: int_ = -1
-) -> ndarray_:
+):
     npcas = all_reductors.shape[-1]
     if natoms == -1:
         natoms = element_ids.shape[0]
     output = check_allocation((natoms, npcas), output=output)
     for i_atom in prange_(natoms):
         el_id = int(element_ids[i_atom])
-        output[i_atom, :] = project_representation(all_X[i_atom], all_reductors[el_id])
+        output[i_atom, :] = project_representation(
+            all_X[i_atom], choose_reductor(all_reductors, el_id)
+        )
     return output
+
+
+@jit_
+def project_local_representations(
+    all_X,
+    element_ids,
+    all_reductors: Union[ndarray_, None] = None,
+    output: Union[ndarray_, None] = None,
+    natoms: int_ = -1,
+) -> ndarray_:
+    if all_reductors is None:
+        return all_X
+    else:
+        return project_local_representations_passed_reductors_check(
+            all_X, element_ids, all_reductors, output=output, natoms=natoms
+        )
 
 
 @jit_(numba_parallel=True)
 def project_scale_local_representations(
     all_X,
     element_ids,
-    all_reductors,
+    all_reductors: Union[ndarray_, None],
     sigma,
     output: Union[ndarray_, None] = None,
     natoms: int_ = -1,
 ) -> ndarray_:
-    output = project_local_representations(
-        all_X, element_ids, all_reductors, output=output, natoms=natoms
-    )
-    output[:, :] /= sigma
-    return output
+    if all_reductors is None:
+        return all_X / sigma
+    else:
+        output = project_local_representations(
+            all_X, element_ids, all_reductors=all_reductors, output=output, natoms=natoms
+        )
+        output[:, :] /= sigma
+        return output

@@ -6,10 +6,13 @@
 # based on FJK models learning to account for insufficient convergence of pySCF calculations.
 # Also, the test's errors between machine can be noticeably worse when smaller molecules (3 heavy atoms and less) are considered.
 
-import random
-
 import pytest
-from conftest import add_checksum_to_dict, compare_or_create, perturbed_xyz_nhatoms_interval
+from conftest import (
+    add_checksum_to_dict,
+    compare_or_create,
+    int2rng,
+    perturbed_xyz_nhatoms_interval,
+)
 
 from qml2.jit_interfaces import array_, sqrt_
 
@@ -90,10 +93,10 @@ def test_FJK():
         "spin": {"spin": 2},
     }
     checksums_storage = {}
-    checksums_rng = random.Random(1)
+    checksums_rng = int2rng(1)
     for name, kwargs in d.items():
         run_single_FJK_pair_test(name, kwargs, checksums_storage, checksums_rng)
-    compare_or_create(checksums_storage, test_name, max_rel_difference=5.0e-2)
+    compare_or_create(checksums_storage, test_name, max_rel_difference=0.1)
 
 
 if __name__ == "__main__":

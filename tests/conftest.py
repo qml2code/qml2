@@ -1,15 +1,14 @@
 # KK: the entire conftest setup was largely inspired by qml1/qmllib's.
 import glob
-import itertools
 import os
-import random
 import tarfile
 
+import numpy as np
 from numba import njit
 
 from qml2.basic_utils import mkdir
 from qml2.compound import Compound
-from qml2.jit_interfaces import abs_, array_, dint_, empty_, max_, prod_, sign_, sum_, zeros_
+from qml2.jit_interfaces import array_
 from qml2.utils import all_possible_indices, read_xyz_file, write_compound_to_xyz_file
 
 # For creating "perturbed" QM7 files.
@@ -29,29 +28,22 @@ perturbed_xyz_dir = test_dir + "/test_data/perturbed_qm7"
 xyz_perturbation_magnitude = 1e-6
 
 
+def int2rng(i):
+    return np.random.default_rng(i)
+
+
 def str2rng(s):
-    return random.Random(int.from_bytes(bytes(s, "utf-8")))
-
-
-# Procedures analogous to Numpy that do not depend on Numpy/Torch random number generator.
-def randint_arr(lbound, ubound, shape, rng):
-    output = empty_(shape, dtype=dint_)
-    for i in all_possible_indices(shape):
-        output[i] = rng.randint(lbound, ubound)
-    return output
-
-
-def random_arr(shape, rng):
-    output = empty_(shape)
-    for i in all_possible_indices(shape):
-        output[i] = rng.random()
-    return output
+    b = bytes(s, "utf-8")
+    # NOTE: specifying "big" is not required for newer versions of Python;
+    # added for the tests to run at Python 3.10.
+    seed = int.from_bytes(b, "big")
+    return int2rng(seed)
 
 
 def check_perturbed_coordinates_existence(perturbed_xyz_dir=perturbed_xyz_dir, seed=1):
     if os.path.isdir(perturbed_xyz_dir):
         return
-    rng = random.Random(seed)
+    rng = np.random.default_rng(seed)
     mkdir(perturbed_xyz_dir)
 
     tar_input = tarfile.open(original_xyz_tar)
@@ -61,8 +53,8 @@ def check_perturbed_coordinates_existence(perturbed_xyz_dir=perturbed_xyz_dir, s
             continue
         cur_comp = Compound(xyz=xyz)
         short_xyz_name = os.path.basename(xyz_name)
-        cur_comp.coordinates += xyz_perturbation_magnitude * (
-            random_arr(cur_comp.coordinates.shape, rng) - 0.5
+        cur_comp.coordinates += array_(
+            xyz_perturbation_magnitude * (rng.random(cur_comp.coordinates.shape) - 0.5)
         )
         write_compound_to_xyz_file(cur_comp, perturbed_xyz_dir + "/" + short_xyz_name)
 
@@ -91,7 +83,7 @@ def perturbed_xyz_examples(rng, nxyzs, seed=1):
 
 def xyz_nhatoms(xyz):
     nuclear_charges, _, _, _ = read_xyz_file(xyz)
-    return sum_(nuclear_charges != 1)
+    return np.sum(np.array(nuclear_charges) != 1)
 
 
 def perturbed_xyz_nhatoms_interval(min_nhatoms, max_nhatoms, seed=1):
@@ -113,25 +105,27 @@ float_format = "{:.12E}"
 
 # A function which is close to randomly changing sign of an entry,
 # but is continuous w.r.t. RNG output.
-@njit(fastmath=True)
-def unsigned_polynom(r):
-    return 16 * r**4 - 1
+@njit(fastmath=True, parallel=True)
+def phase_polynom(r):
+    d = 0.5 - r
+    return (16 * (0.5 - np.abs(d)) ** 4 - 1) * np.sign(d)
 
 
 @njit(fastmath=True)
-def random_phase(r_in):
-    if r_in <= 0.5:
-        return unsigned_polynom(r_in)
-    else:
-        return -unsigned_polynom(1.0 - r_in)
+def random_phases(shape, rng):
+    r = rng.random(shape)
+    return phase_polynom(r)
 
 
-def randomly_assign_phase(val, rng):
-    return val * random_phase(rng.random())
+@njit(fastmath=True, parallel=True)
+def add_arr_checksums(checksums, arr, nstack_checksums, rng):
+    checksums[0] += np.sum(arr)
+    for stack_checksum_id in range(nstack_checksums - 1):
+        checksums[stack_checksum_id + 1] += np.sum(arr * random_phases(arr.shape, rng))
 
 
 def get_stack_1dim_bounds(nstacks_1dim, arr_dim):
-    output = empty_((nstacks_1dim + 1,), dtype=dint_)
+    output = np.empty((nstacks_1dim + 1,), dtype=int)
     base_size = arr_dim // nstacks_1dim
     remainder = arr_dim % nstacks_1dim
     output[0] = 0
@@ -146,29 +140,35 @@ def get_stack_bounds(stacks, arr_shape):
     return [get_stack_1dim_bounds(s1d, d) for s1d, d in zip(stacks, arr_shape)]
 
 
-def get_stack_indices(stack_bounds, stack_ids):
-    id_iterators = []
+def get_stack_subarr(arr, stack_bounds, stack_ids):
+    slice_list = []
     for sb, si in zip(stack_bounds, stack_ids):
-        id_iterators.append(range(sb[si], sb[si + 1]))
-    return itertools.product(*id_iterators)
+        slice_list.append(slice(sb[si], sb[si + 1]))
+    slice_tuple = tuple(slice_list)
+    if isinstance(arr, list):
+        assert len(slice_tuple) == 1
+        return arr[slice_tuple[0]]
+    else:
+        return arr[slice_tuple]
 
 
 def create_checksums(arr, rng, nstack_checksums=1, stacks=1):
-    arr_shape = arr.shape
-    arr_dim = len(arr_shape)
+    arr_is_list = isinstance(arr, list)
+    if arr_is_list:
+        arr_shape = (len(arr),)
+        arr_dim = 1
+    else:
+        arr_shape = arr.shape
+        arr_dim = len(arr_shape)
     if not isinstance(stacks, tuple):
         stacks = (stacks,)
-    tot_checksum_num = prod_(stacks) * nstack_checksums
-    checksums = zeros_((tot_checksum_num,), dtype=arr.dtype)
+    tot_checksum_num = np.prod(stacks) * nstack_checksums
+    checksums = np.zeros((tot_checksum_num,))
 
     if arr_dim > len(stacks):
         stacks = (*stacks, *[1 for _ in range(arr_dim - len(stacks))])
-    stack_sizes = empty_(
-        (arr_dim,),
-    )
-    stack_size_remainders = empty_(
-        (arr_dim,),
-    )
+    stack_sizes = np.empty((arr_dim,), dtype=int)
+    stack_size_remainders = np.empty((arr_dim,), dtype=int)
     for dim_id, st in enumerate(stacks):
         stack_sizes[dim_id] = arr_shape[dim_id] // st
         stack_size_remainders[dim_id] = arr_shape[dim_id] % st
@@ -179,12 +179,16 @@ def create_checksums(arr, rng, nstack_checksums=1, stacks=1):
 
     stack_checksums_lb = 0
     for stack_ids in stack_counters:
-        stack_indices = get_stack_indices(stack_bounds, stack_ids)
-        for poss_id in stack_indices:
-            val = arr[poss_id]
-            checksums[stack_checksums_lb] += val
-            for i in range(1, nstack_checksums):
-                checksums[stack_checksums_lb + i] += randomly_assign_phase(val, rng)
+        subarr = get_stack_subarr(arr, stack_bounds, stack_ids)
+        if arr_is_list:
+            for element in subarr:
+                add_arr_checksums(
+                    checksums[stack_checksums_lb:], np.array(element), nstack_checksums, rng
+                )
+        else:
+            add_arr_checksums(
+                checksums[stack_checksums_lb:], np.array(subarr), nstack_checksums, rng
+            )
         stack_checksums_lb += nstack_checksums
 
     return checksums
@@ -211,7 +215,7 @@ def read_all_checksums(benchmark_name):
     benchmark_input.close()
     converted_output = {}
     for arr_name, arr in output.items():
-        converted_output[arr_name] = array_(arr)
+        converted_output[arr_name] = np.array(arr)
     return converted_output
 
 
@@ -234,11 +238,11 @@ def print_checksum_dict(benchmark_name, checksum_dictionnary):
 
 
 def max_diff(arr1, arr2):
-    return max_(abs_(arr1 - arr2))
+    return np.max(np.abs(arr1 - arr2))
 
 
 def max_rel_diff(arr1, arr2):
-    return max_(abs_((arr1 - arr2) / (arr1 + arr2) * 2.0))
+    return np.max(np.abs((arr1 - arr2) / (arr1 + arr2) * 2.0))
 
 
 def add_checksum_to_dict(checksum_dict, arr_name, arr, rng, nstack_checksums=1, stacks=1):
@@ -300,9 +304,17 @@ def compare_or_create(
 
 
 def fix_reductor_signs(reductor):
-    reductor *= sign_(reductor[0])
+    reductor *= np.sign(reductor[0])
 
 
 def fix_reductors_signs(reductors):
     for red_id in range(reductors.shape[0]):
         fix_reductor_signs(reductors[red_id])
+
+
+@njit(fastmath=True, parallel=True)
+def nullify_uninitialized_grad(grad_representation, relevant_atom_ids, relevant_atom_nums):
+    for i in range(relevant_atom_nums.shape[0]):
+        relevant_atom_num = relevant_atom_nums[i]
+        grad_representation[i, :, relevant_atom_num:, :] = 0.0
+        relevant_atom_ids[i, relevant_atom_num:] = 0

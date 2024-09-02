@@ -1,6 +1,12 @@
 from .basic_utils import nuclear_charge
 from .jit_interfaces import array_, int_
-from .representations import generate_bob, generate_coulomb_matrix, generate_fchl19, generate_slatm
+from .representations import (
+    generate_bob,
+    generate_cmbdf,
+    generate_coulomb_matrix,
+    generate_fchl19,
+    generate_slatm,
+)
 from .utils import read_xyz_file, read_xyz_lines
 
 
@@ -55,8 +61,18 @@ class Compound:
             self.nuclear_charges, self.coordinates, size=size
         )
 
-    def generate_fchl19(self, **kwargs):
-        self.representation = generate_fchl19(self.nuclear_charges, self.coordinates, **kwargs)
+    def generate_fchl19(self, gradients=False, **kwargs):
+        if gradients:
+            (
+                self.representation,
+                self.grad_representation,
+                self.grad_relevant_atom_ids,
+                self.grad_relevant_atom_nums,
+            ) = generate_fchl19(
+                self.nuclear_charges, self.coordinates, gradients=gradients, **kwargs
+            )
+        else:
+            self.representation = generate_fchl19(self.nuclear_charges, self.coordinates, **kwargs)
 
     def generate_bob(self, bags, **kwargs):
         self.representation = generate_bob(self.nuclear_charges, self.coordinates, bags, **kwargs)
@@ -65,6 +81,21 @@ class Compound:
         self.representation = generate_slatm(
             self.nuclear_charges, self.coordinates, mbtypes, **kwargs
         )
+
+    def generate_cmbdf(self, convolutions, gradients=False, **kwargs):
+        if gradients:
+            (
+                self.representation,
+                self.grad_representation,
+                self.grad_relevant_atom_ids,
+                self.grad_relevant_atom_nums,
+            ) = generate_cmbdf(
+                self.nuclear_charges, self.coordinates, convolutions, gradients=gradients, **kwargs
+            )
+        else:
+            self.representation = generate_cmbdf(
+                self.nuclear_charges, self.coordinates, convolutions, **kwargs
+            )
 
 
 # Additional constructors.

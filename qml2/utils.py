@@ -152,6 +152,12 @@ def l2_norm_sq_dist(vec1, vec2):
     return l2_sq_norm(vec1 - vec2)
 
 
+@jit_
+def multiply_transposed(mat, vec):
+    for i in prange_(vec.shape[0]):
+        mat[i] *= vec[i]
+
+
 #   XYZ processing.
 def check_byte(byte_or_str):
     if isinstance(byte_or_str, str):
