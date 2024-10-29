@@ -20,8 +20,9 @@ min_nhatoms = 4
 max_nhatoms = 5
 
 
-def run_single_FJK_pair_test(pair_name, pair_kwargs, checksums_storage, checksums_rng):
-    _ = pytest.importorskip("pyscf")
+def run_single_FJK_pair_test(
+    pair_name, pair_kwargs, checksums_storage, checksums_rng, use_gpu=False
+):
     from qml2.orb_ml import OML_Compound, OML_CompoundList, OML_Slater_pair
     from qml2.orb_ml.kernels import gaussian_kernel, gaussian_kernel_symmetric, rep_stddevs
     from qml2.orb_ml.oml_compound import OML_pyscf_calc_params
@@ -35,7 +36,7 @@ def run_single_FJK_pair_test(pair_name, pair_kwargs, checksums_storage, checksum
     A_xyzs = example_xyzs[:32]
     B_xyzs = example_xyzs[32:48]
 
-    comp_param_kwargs = {"pyscf_calc_params": calc_params}
+    comp_param_kwargs = {"pyscf_calc_params": calc_params, "use_gpu": use_gpu}
 
     if pair_kwargs is None:
 
@@ -53,8 +54,8 @@ def run_single_FJK_pair_test(pair_name, pair_kwargs, checksums_storage, checksum
     B_compounds = OML_CompoundList([comp_func(xyz) for xyz in B_xyzs])
 
     rep_param_kwargs = {"rep_params": rep_params}
-    A_compounds.generate_orb_reps(**rep_param_kwargs, test_mode=True)
-    B_compounds.generate_orb_reps(**rep_param_kwargs, test_mode=True)
+    A_compounds.generate_orb_reps(**rep_param_kwargs, test_mode=True, serial=use_gpu)
+    B_compounds.generate_orb_reps(**rep_param_kwargs, test_mode=True, serial=use_gpu)
 
     # Calculate sigmas.
     sigmas = rep_stddevs(A_compounds)
@@ -83,8 +84,8 @@ def run_single_FJK_pair_test(pair_name, pair_kwargs, checksums_storage, checksum
 
 
 def test_FJK():
+    _ = pytest.importorskip("pyscf")
     test_name = "FJK"
-
     d = {
         "single": None,
         "HOMO": {"used_orb_type": "HOMO_removed", "calc_type": "UHF"},

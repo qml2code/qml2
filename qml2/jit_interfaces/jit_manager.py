@@ -73,7 +73,7 @@ class _jit_:
 
 
 def get_jit_keywords(
-    used_jit_name=None, numba_parallel=False, numba_fastmath=True, numba_nopython=True
+    used_jit_name=None, skip=False, numba_parallel=False, numba_fastmath=True, numba_nopython=True
 ):
     kws = {}
     for var_name, var in locals().items():
@@ -91,8 +91,8 @@ class defined_jit_:
         self.used_jit_name = used_jit_name
         self.possible_jit_failures = possible_jit_failures
 
-    def exception_skipping_jit(self, signature_or_function, **kwargs):
-        if skip_jit:
+    def exception_skipping_jit(self, signature_or_function, local_skip_jit=False, **kwargs):
+        if skip_jit or local_skip_jit:
             return signature_or_function
         try:
             return self.used_jit_func(signature_or_function, **kwargs)
@@ -107,6 +107,8 @@ class defined_jit_:
         jit_keywords = get_jit_keywords(used_jit_name=self.used_jit_name, **other_keywords)
         if debug and self.used_jit_name == numba_flag:
             jit_keywords["debug"] = debug
+        if "skip" in other_keywords:
+            jit_keywords["local_skip_jit"] = other_keywords["skip"]
         if signature_or_function is None:
             return _jit_(used_jit_=self, jit_keywords=jit_keywords)
         else:

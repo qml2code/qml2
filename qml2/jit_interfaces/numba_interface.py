@@ -148,6 +148,7 @@ min_ = np.min
 sign_ = np.sign
 floor_ = np.floor
 mean_ = np.mean
+median_ = np.median
 std_ = np.std
 sort_ = np.sort
 # logical

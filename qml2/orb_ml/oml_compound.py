@@ -25,6 +25,14 @@ try:
     from .xtb_interface import generate_pyscf_mf_mol as xtb_generate_pyscf_mf_mol
 except ModuleNotFoundError:
     pass
+# interface to gpu4pyscf
+try:
+    from gpu4pyscf import dft as dft_gpu
+    from gpu4pyscf import scf as scf_gpu
+
+    mf_creator_gpu = {"HF": scf_gpu.RHF, "UHF": scf_gpu.UHF, "KS": dft_gpu.RKS, "UKS": dft_gpu.UKS}
+except ModuleNotFoundError:
+    mf_creator_gpu = None
 
 mf_creator = {"HF": scf.RHF, "UHF": scf.UHF, "KS": dft.RKS, "UKS": dft.UKS}
 
@@ -96,6 +104,7 @@ class OML_Compound(Compound):
         write_full_pyscf_chkfile=False,
         solvent_eps=None,
         localization_procedure="IBO",
+        use_gpu=False,
         temp_calc_dir=None,
     ):
         super().__init__(
@@ -107,6 +116,7 @@ class OML_Compound(Compound):
         )
 
         self.software = assign_avail_check(software, available_software)
+        self.use_gpu = use_gpu
 
         if calc_type is None:
             self.calc_type = available_calc_types[self.software][0]
@@ -292,10 +302,14 @@ class OML_Compound(Compound):
         self.e_tot = mf.e_tot
         self.ovlp_mat = array_(pyscf_mol.intor_symmetric("int1e_ovlp"))
 
-        if (self.calc_type in HF_methods) and (self.solvent_eps is None):
+        if self.calc_type in HF_methods:
             self.j_mat = self.adjust_spin_mat_dimen(mf.get_j(), already_spin_adj=True)
             self.k_mat = self.adjust_spin_mat_dimen(mf.get_k(), already_spin_adj=True)
-            self.fock_mat = self.adjust_spin_mat_dimen(mf.get_fock())
+            if self.solvent_eps is None:
+                fock_kwargs = {}
+            else:
+                fock_kwargs = {"dm": mf.make_rdm1()}
+            self.fock_mat = self.adjust_spin_mat_dimen(mf.get_fock(**fock_kwargs))
 
         self.orb_mat = self.localized_orbs(pyscf_mol=pyscf_mol)
         self.create_mats_savefile()
@@ -464,7 +478,14 @@ class OML_Compound(Compound):
         return mol
 
     def generate_pyscf_mf(self, pyscf_mol, initial_guess_comp=None):
-        mf = mf_creator[self.calc_type](pyscf_mol)
+        if self.use_gpu:
+            used_mf_creator = mf_creator_gpu
+            assert (
+                used_mf_creator is not None
+            ), "check that gpu4pyscf is installed: https://github.com/pyscf/gpu4pyscf"
+        else:
+            used_mf_creator = mf_creator
+        mf = used_mf_creator[self.calc_type](pyscf_mol)
         if self.calc_type in KS_methods:
             mf.xc = self.dft_xc
             mf.nlc = self.dft_nlc
@@ -489,6 +510,7 @@ class OML_Compound(Compound):
             dm_init_guess=dm_init_guess,
             use_Huckel=self.use_Huckel,
             mats_savefile=self.mats_savefile_final,
+            use_gpu=self.use_gpu,
         )
         return mf
 

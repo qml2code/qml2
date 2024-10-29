@@ -1,10 +1,12 @@
 from ..compound_list import CompoundList
 from ..parallelization import parallelized_inheritance
-from .oml_compound import ASE2OML_Compound, OML_Compound, OML_Slater_pair
+from .oml_compound import ASE2OML_Compound, OML_Compound, OML_Slater_pair, OML_Slater_pairs
 
 
 @parallelized_inheritance(
-    "run_calcs", "generate_orb_reps", base_classes=[OML_Compound, OML_Slater_pair]
+    "run_calcs",
+    "generate_orb_reps",
+    base_classes=[OML_Compound, OML_Slater_pair, OML_Slater_pairs],
 )
 class OML_CompoundList(CompoundList):
     """The class was created to allow easy embarrassing parallelization of operations with lists of OML_Compound or OML_Slater_pair objects."""

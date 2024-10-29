@@ -586,15 +586,20 @@ def generate_cmbdf(
             twob, threeb = generate_data(size, charges, coords, rconvs, aconvs, rcut, n_atm)
             mat[:size, :nr] = einsum("ij... -> i...", twob)
             mat[:size, nr:] = einsum("ijk... -> i...", threeb)
+            if cell is not None:
+                mat = mat[:true_size]
+
             return mat
 
-    else:
-        keys = list(asize.keys())
-        rep_size = sum(asize.values())
-        elements = {k: [] for k in keys}
-        mat, ind = np.zeros((rep_size, desc_size)), 0
+    keys = list(asize.keys())
+    rep_size = sum(asize.values())
+    elements = {k: [] for k in keys}
+    for i in range(size):
+        elements[charges[i]].append(i)
 
-        twob, threeb = generate_data(size, charges, coords, rconvs, aconvs, rcut, n_atm)
+    mat, ind = np.zeros((rep_size, desc_size)), 0
+
+    twob, threeb = generate_data(size, charges, coords, rconvs, aconvs, rcut, n_atm)
 
     for key in keys:
         num = len(elements[key])
@@ -609,6 +614,4 @@ def generate_cmbdf(
 
         ind += asize[key]
 
-    if cell is not None:
-        mat = mat[:true_size]
-    return mat
+    return mat.ravel()

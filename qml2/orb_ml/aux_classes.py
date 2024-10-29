@@ -15,20 +15,35 @@ class OML_pyscf_calc_params:
         self,
         orb_max_iter=5000,
         orb_grad_tol=1.0e-8,
-        scf_max_cycle=5000,
+        scf_max_cycle=50,
+        so_scf_max_cycle=5000,
         scf_conv_tol=1e-9,
         scf_conv_tol_grad=None,
     ):
+        """
+        During an SCF calculation the code first runs scf_max_cycle SCF cycles
+        (by default same number as normal SCF), if that failes it runs so_scf_max_cycle
+        second order SCF cycles.
+        """
         self.orb_kwargs = {"max_iter": orb_max_iter, "grad_tol": orb_grad_tol}
         self.scf_max_cycle = scf_max_cycle
+        self.so_scf_max_cycle = so_scf_max_cycle
         self.scf_conv_tol = scf_conv_tol
         self.scf_conv_tol_grad = scf_conv_tol_grad
 
 
-def pySCFNotConvergedErrorMessage(pyscf_calc_params=None, mats_savefile=None):
+def pySCFNotConvergedErrorMessage(
+    pyscf_calc_params: OML_pyscf_calc_params | None = None, mats_savefile=None
+):
     message = "WARNING: A SCF calculation failed to converge."
     if pyscf_calc_params is not None:
-        message += " Number of cycles: " + str(pyscf_calc_params.scf_max_cycle) + "."
+        message += (
+            " Number of cycles: "
+            + str(pyscf_calc_params.scf_max_cycle)
+            + "(first order) and "
+            + str(pyscf_calc_params.so_scf_max_cycle)
+            + " (second_order)."
+        )
     if mats_savefile is not None:
         message += " Problematic mats_savefile: " + mats_savefile
     return message
@@ -44,6 +59,7 @@ def converged_mf(
     dm_init_guess=None,
     use_Huckel=False,
     mats_savefile=None,
+    use_gpu=False,
 ):
     mf.conv_tol = pyscf_calc_params.scf_conv_tol
     if use_Huckel:
@@ -55,8 +71,11 @@ def converged_mf(
         mf.run()
     else:
         mf.kernel(dm_init_guess)
+    if use_gpu:
+        mf = mf.to_cpu()
     if not (mf.converged or use_Huckel):
         mf = scf.newton(mf)
+        mf.max_cycle = pyscf_calc_params.so_scf_max_cycle
         mf.run()
         if mf.converged:
             print("SCF converged with SO-SCF.")

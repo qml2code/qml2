@@ -21,8 +21,7 @@ def all_log_rescalings(oml_comp_list):
     return log_(array_(output))
 
 
-def test_optimize_basis_sets():
-    _ = pytest.importorskip("pyscf")
+def run_optimize_basis_sets_test(use_gpu=False):
     from qml2.orb_ml import OML_Compound, OML_CompoundList
     from qml2.orb_ml.oml_compound import OML_pyscf_calc_params
 
@@ -38,7 +37,12 @@ def test_optimize_basis_sets():
         custom_rescaling[el] = [[0], [1, 2]]
 
     for xyz in example_xyzs:
-        kwargs = {"xyz": xyz, "pyscf_calc_params": calc_params, "optimize_ao_rescalings": True}
+        kwargs = {
+            "xyz": xyz,
+            "pyscf_calc_params": calc_params,
+            "optimize_ao_rescalings": True,
+            "use_gpu": use_gpu,
+        }
         example_compounds_default_rescaling.append(OML_Compound(**kwargs))
         example_compounds_custom_rescaling.append(
             OML_Compound(**kwargs, basis_rescaled_orbitals=custom_rescaling)
@@ -47,8 +51,8 @@ def test_optimize_basis_sets():
     example_compounds_default_rescaling = OML_CompoundList(example_compounds_default_rescaling)
     example_compounds_custom_rescaling = OML_CompoundList(example_compounds_custom_rescaling)
 
-    example_compounds_default_rescaling.run_calcs(test_mode=True)
-    example_compounds_custom_rescaling.run_calcs(test_mode=True)
+    example_compounds_default_rescaling.run_calcs(test_mode=True, serial=use_gpu)
+    example_compounds_custom_rescaling.run_calcs(test_mode=True, serial=use_gpu)
 
     default_log_rescalings = all_log_rescalings(example_compounds_default_rescaling)
     custom_log_rescalings = all_log_rescalings(example_compounds_custom_rescaling)
@@ -74,6 +78,11 @@ def test_optimize_basis_sets():
     )
 
     compare_or_create(checksums_storage, "optimize_basis_sets", max_difference=5.0e-2)
+
+
+def test_optimize_basis_sets():
+    _ = pytest.importorskip("pyscf")
+    run_optimize_basis_sets_test()
 
 
 if __name__ == "__main__":

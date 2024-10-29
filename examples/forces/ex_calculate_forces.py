@@ -108,7 +108,7 @@ ninv_MAE = callable_ninv_MAE_local_dn_forces_SORF(
     training_set_ratio=training_set_ratio,
 )
 
-bo_kwargs = {"initpts": 1, "iterpts": 32, "kernel": "rbf"}
+bo_kwargs = {"initpts": 1, "iterpts": 32, "kernel": "rbf", "minfreq": 0}
 bo = BOMain(ninv_MAE, [log_relative_lambda_search_bounds, log_sigma_search_bounds], **bo_kwargs)
 res = bo.run()
 

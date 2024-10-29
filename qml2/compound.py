@@ -7,7 +7,7 @@ from .representations import (
     generate_fchl19,
     generate_slatm,
 )
-from .utils import read_xyz_file, read_xyz_lines
+from .utils import read_xyz_file, read_xyz_lines, str_atom_corr
 
 
 class Compound:
@@ -49,6 +49,8 @@ class Compound:
             self.nuclear_charges = array_(
                 [nuclear_charge(atomtype) for atomtype in self.atomtypes], dtype=int_
             )
+        if (self.atomtypes is None) and (self.nuclear_charges is not None):
+            self.atomtypes = [str_atom_corr(charge) for charge in self.nuclear_charges]
 
         if isinstance(xyz, str):
             self.name = xyz

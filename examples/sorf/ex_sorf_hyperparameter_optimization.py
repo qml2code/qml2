@@ -86,7 +86,7 @@ log_init_sigma_guess = np.log(init_sigma_guess)
 log_sigma_search_bounds = [log_init_sigma_guess - 2.5, log_init_sigma_guess + 2.5]
 log_relative_lambda_search_bounds = [np.log(1.0e-14), np.log(1.0e-5)]
 
-bo_kwargs = {"initpts": 1, "iterpts": 32, "kernel": "rbf"}
+bo_kwargs = {"initpts": 1, "iterpts": 32, "kernel": "rbf", "minfreq": 0}
 bo = BOMain(ninv_MAE, [log_relative_lambda_search_bounds, log_sigma_search_bounds], **bo_kwargs)
 res = bo.run()
 

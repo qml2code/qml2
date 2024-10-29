@@ -330,6 +330,8 @@ def mean_(t, axis: int = 0):
     return torch.mean(t, dim=axis)
 
 
+median_ = torch.median
+
 std_ = torch.std
 
 

@@ -201,8 +201,13 @@ class ParallelizedAttribute:
         num_procs=None,
         fixed_num_threads=default_fixed_num_threads_val,
         test_mode=False,
+        serial=False,
         **kwargs
     ):
+        if serial:
+            for i, el in enumerate(list_obj):
+                list_obj[i] = self.processed_attribute(el, *args, **kwargs)
+            return
         if test_mode:
             dnum_procs = default_num_procs(num_procs)
             dfixed_num_threads = default_fixed_num_threads(fixed_num_threads)
@@ -222,8 +227,8 @@ class ParallelizedAttribute:
             num_procs=num_procs,
             fixed_num_threads=fixed_num_threads,
         )
-        for i in range(len(list_obj)):
-            list_obj[i] = new_vals[i]
+        for i, new_val in enumerate(new_vals):
+            list_obj[i] = new_val
 
 
 stored_parallelized_attributes = {}
