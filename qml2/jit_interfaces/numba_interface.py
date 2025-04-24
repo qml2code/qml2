@@ -62,6 +62,7 @@ int_ = np.int64
 bool_ = np.bool_
 dfloat_ = np.float64
 dint_ = np.int64
+dint32_ = np.int32
 dbool_ = np.bool_
 ndarray_ = np.ndarray
 optional_ndarray_ = Union[ndarray_, None]
@@ -153,6 +154,7 @@ std_ = np.std
 sort_ = np.sort
 # logical
 logical_not_ = np.logical_not
+logical_and_ = np.logical_and
 any_ = np.any
 all_ = np.all
 # linear operations

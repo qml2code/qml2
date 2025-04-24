@@ -29,14 +29,19 @@ To check that the installed repo works correctly run
    ```
 **NOTE:** The command assumes that `python` environmental variable points towards a valid executable. If you use an environment alias change definition of the `python` variable in the beginning of the Makefile.
 
+## :books: API documentation
 
-## Additional scripts
+API documentation can be generated with [Doxygen](https://www.doxygen.nl/) by running
 
-Apart from the source the code contains the following folders:
+   ```bash
+   make docs
+   ```
+or, if Makefile is not installed, running
+   ```bash
+   python doxygen/run_doxygen.py
+   ```
 
-<code> sanity_checks </code> - scripts used during development to check implemented procedures work correctly.
-
-<code> failure_cases </code> - scripts demonstrating problems encountered in previously implemented procedures after they've passed peer-review publication stage. (Hopefully inspiring others to fix them.)
+This will create `manual.html` file that can be opened with an Internet browser.
 
 ## :computer: Environmental variables
 
@@ -76,3 +81,18 @@ This allows automatic formatting/readability checks for the committed code. It i
    ```bash
    make conventional-commits
    ```
+
+## :pager: Slack channel
+
+If you plan to use `qml2` regularly consider contacting the developers to join their Slack channel for quick means of communication.
+
+## :lock: Developer repository
+
+`qml2-dev` is the private "developer" version of `qml2` repository created to allow package developers creation and easy management of private forks, as well as sharing messier code drafts. If you interact with the code and one of the package authors on a regular basis consider asking them to be added; though in general we try to prevent `qml2` from lagging behind `qml2-dev` for more than two months.
+
+## :name_badge: Developer list
+
+* [Konstantin Karandashev](https://github.com/kvkarandashev) (<kvkarandashev@gmail.com>)
+* [Stefan Heinen](https://github.com/heini-phys-chem)
+* [Danish Khan](https://github.com/dkhan42)
+* [Jan Weinrech](https://github.com/janweinreich)

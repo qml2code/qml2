@@ -21,7 +21,7 @@ max_nhatoms = 5
 
 
 def run_single_FJK_pair_test(
-    pair_name, pair_kwargs, checksums_storage, checksums_rng, use_gpu=False
+    pair_name, pair_kwargs, checksums_storage, checksums_rng, use_gpu=False, use_Huckel=False
 ):
     from qml2.orb_ml import OML_Compound, OML_CompoundList, OML_Slater_pair
     from qml2.orb_ml.kernels import gaussian_kernel, gaussian_kernel_symmetric, rep_stddevs
@@ -36,7 +36,11 @@ def run_single_FJK_pair_test(
     A_xyzs = example_xyzs[:32]
     B_xyzs = example_xyzs[32:48]
 
-    comp_param_kwargs = {"pyscf_calc_params": calc_params, "use_gpu": use_gpu}
+    comp_param_kwargs = {
+        "pyscf_calc_params": calc_params,
+        "use_gpu": use_gpu,
+        "use_Huckel": use_Huckel,
+    }
 
     if pair_kwargs is None:
 
@@ -83,9 +87,12 @@ def run_single_FJK_pair_test(
         )
 
 
-def test_FJK():
+def test_FJK(use_Huckel=False):
     _ = pytest.importorskip("pyscf")
-    test_name = "FJK"
+    if use_Huckel:
+        test_name = "FJK_Huckel"
+    else:
+        test_name = "FJK"
     d = {
         "single": None,
         "HOMO": {"used_orb_type": "HOMO_removed", "calc_type": "UHF"},
@@ -96,9 +103,16 @@ def test_FJK():
     checksums_storage = {}
     checksums_rng = int2rng(1)
     for name, kwargs in d.items():
-        run_single_FJK_pair_test(name, kwargs, checksums_storage, checksums_rng)
+        run_single_FJK_pair_test(
+            name, kwargs, checksums_storage, checksums_rng, use_Huckel=use_Huckel
+        )
     compare_or_create(checksums_storage, test_name, max_rel_difference=0.1)
+
+
+def test_FJK_Huckel():
+    test_FJK(use_Huckel=True)
 
 
 if __name__ == "__main__":
     test_FJK()
+    test_FJK_Huckel()

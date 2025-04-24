@@ -1,74 +1,87 @@
 import itertools as itl
 from typing import List
 
-import numpy as np
-from numba import jit, njit, prange
-from numpy import exp, int64, ndarray, pi, sqrt
 from scipy.spatial import distance as ssd
 
+from ..jit_interfaces import (
+    all_,
+    arccos_,
+    array_,
+    concatenate_,
+    cos_,
+    dfloat_,
+    dint32_,
+    dot_,
+    exp_,
+    int_,
+    jit_,
+    l2_norm_,
+    linspace_,
+    logical_and_,
+    max_,
+    ndarray_,
+    pi_,
+    prange_,
+    sqrt_,
+    sum_,
+    where_,
+    zeros_,
+)
+from ..utils import l2_norm_sq_dist
 
-@jit(nopython=True)
-def linspace(x0, x1, nx):
-    step = (x1 - x0) / (nx - 1)
-    xs = np.empty(nx)
-    for i in range(nx):
-        xs[i] = x0 + i * step
-    return xs
 
-
-@jit(nopython=True)
-def calc_angle(a, b, c):
-    v1 = a - b
-    v2 = c - b
-    v1 = v1 / np.linalg.norm(v1)
-    v2 = v2 / np.linalg.norm(v2)
-    cos_angle = np.dot(v1, v2)
-    # Clipping to ensure numerical stability
-    cos_angle = min(1.0, max(cos_angle, -1.0))
-    angle = np.arccos(cos_angle)
-    return angle
-
-
-@jit(nopython=True)
+@jit_
 def calc_cos_angle(a, b, c):
     v1 = a - b
     v2 = c - b
-    v1 = v1 / np.linalg.norm(v1)
-    v2 = v2 / np.linalg.norm(v2)
-    cos_angle = np.dot(v1, v2)
+    v1 /= l2_norm_(v1)
+    v2 /= l2_norm_(v2)
+    cos_angle = dot_(v1, v2)
     return cos_angle
 
 
-@jit(nopython=True, parallel=True)
+@jit_
+def calc_angle(a, b, c):
+    cos_angle = calc_cos_angle(a, b, c)
+    # Clipping to ensure numerical stability
+    if cos_angle >= 1.0:
+        return 0.0
+    if cos_angle <= -1.0:
+        return pi_
+    angle = arccos_(cos_angle)
+    return angle
+
+
+@jit_(numba_parallel=True)
 def get_sbot_global(coordinates, nuclear_charges, z1, z2, z3, rcut, nx, dgrid, sigma, coeff):
     natoms = coordinates.shape[0]
-    pi = np.pi
+    pi = pi_
     d2r = pi / 180.0
     a0 = -20.0 * d2r
     a1 = pi + 20.0 * d2r
-    xs = linspace(a0, a1, nx)
+    xs = linspace_(a0, a1, nx)
     prefactor = 1.0 / 3.0
     c0 = prefactor * (z1 % 1000) * (z2 % 1000) * (z3 % 1000) * coeff * dgrid
-    ys = np.zeros(nx)
+    ys = zeros_(nx)
     inv_sigma = -1.0 / (2 * sigma**2)
 
     # Compute distance matrix
-    distance_matrix = np.zeros((natoms, natoms))
-    for i in prange(natoms):
+    distance_matrix = zeros_((natoms, natoms))
+    for i in prange_(natoms):
         for j in range(i + 1, natoms):
-            norm = np.sqrt(np.sum((coordinates[j, :] - coordinates[i, :]) ** 2))
+            norm = sqrt_(l2_norm_sq_dist(coordinates[j], coordinates[i]))
             distance_matrix[i, j] = norm
             distance_matrix[j, i] = norm
 
     # Finding indices of atoms with specified nuclear charges
-    ias1 = np.where(nuclear_charges == z1)[0]
-    ias2 = np.where(nuclear_charges == z2)[0]
-    ias3 = np.where(nuclear_charges == z3)[0]
+    ias1 = where_(nuclear_charges == z1)[0]
+    ias2 = where_(nuclear_charges == z2)[0]
+    ias3 = where_(nuclear_charges == z3)[0]
 
-    cos_xs = np.cos(xs) * c0
+    cos_xs = cos_(xs) * c0
 
     # Calculation loop
-    for ia1 in prange(len(ias1)):
+    for ia1 in prange_(len(ias1)):
         for ia2 in range(len(ias2)):
             for ia3 in range(len(ias3)):
                 if z1 == z3 and ia1 >= ia3:
@@ -86,40 +99,45 @@ def get_sbot_global(coordinates, nuclear_charges, z1, z2, z3, rcut, nx, dgrid, s
                 cai = calc_cos_angle(coordinates[k], coordinates[i], coordinates[j])
 
                 r = distance_matrix[i, j] * distance_matrix[i, k] * distance_matrix[j, k]
-                ys += (c0 + cos_xs * cak * cai) / (r**3) * np.exp((xs - ang) ** 2 * inv_sigma)
+                ys += (c0 + cos_xs * cak * cai) / (r**3) * exp_((xs - ang) ** 2 * inv_sigma)
 
     return ys
 
 
-@jit(nopython=True, parallel=True)
+@jit_(numba_parallel=True)
 def get_sbop_global(coordinates, nuclear_charges, z1, z2, rcut, nx, dgrid, sigma, coeff, rpower):
     #    natoms = coordinates.shape[0]
-    ys = np.zeros(nx)
+    ys = zeros_(nx)
     c0 = (z1 % 1000) * (z2 % 1000) * coeff
     inv_sigma = -0.5 / sigma**2
-    xs = linspace(0.1, rcut, nx)
+    xs = linspace_(0.1, rcut, nx)
     xs0 = c0 / (xs**rpower) * dgrid
     rcut2 = rcut**2
 
     # Allocate arrays to hold indices of atoms with specific nuclear charges
-    ias1 = np.nonzero(nuclear_charges == z1)[0]
-    ias2 = np.nonzero(nuclear_charges == z2)[0]
+    ias1 = where_(nuclear_charges == z1)[0]
+    ias2 = where_(nuclear_charges == z2)[0]
 
     # Main loop to calculate ys
-    for ia1 in prange(len(ias1)):
+    for ia1 in prange_(len(ias1)):
         for ia2 in range(len(ias2)):
             # When z1 == z2, avoid double counting pairs by ensuring ia2 > ia1
             if z1 == z2 and ia1 >= ia2:
                 continue
-            r2 = np.sum((coordinates[ias1[ia1]] - coordinates[ias2[ia2]]) ** 2)
+            r2 = sum_((coordinates[ias1[ia1]] - coordinates[ias2[ia2]]) ** 2)
             if r2 < rcut2:
-                r = np.sqrt(r2)
-                ys += xs0 * np.exp(inv_sigma * (xs - r) ** 2)
+                r = sqrt_(r2)
+                ys += xs0 * exp_(inv_sigma * (xs - r) ** 2)
 
     return ys
 
 
-@njit(parallel=True)
+@jit_
+def outside_interval(lbound, val, ubound):
+    return (val < lbound) or (val >= ubound)
+
+
+@jit_
 def get_sbot_local(
     coordinates, nuclear_charges, ia_python, z1, z2, z3, rcut, nx, dgrid, sigma, coeff
 ):
@@ -130,99 +148,90 @@ def get_sbot_local(
             f"ERROR: Coulomb matrix generation, {coordinates.shape[0]} coordinates, but {nuclear_charges.size} atom_types!"
         )
 
-    ias1, ias2, ias3 = [], [], []
-    for i in range(natoms):
-        if int(nuclear_charges[i]) == z1:
-            ias1.append(i)
-        if int(nuclear_charges[i]) == z2:
-            ias2.append(i)
-        if int(nuclear_charges[i]) == z3:
-            ias3.append(i)
+    ias1 = where_(nuclear_charges == z1)[0]
+    ias2 = where_(nuclear_charges == z2)[0]
+    ias3 = where_(nuclear_charges == z3)[0]
 
+    ys = zeros_(nx)
     if ia_python not in ias2:
-        return
+        return ys
 
-    distance_matrix = np.zeros((natoms, natoms))
-    for i in prange(natoms):
+    distance_matrix = zeros_((natoms, natoms))
+    for i in range(natoms):
         for j in range(i + 1, natoms):
-            norm = sqrt(np.sum((coordinates[j] - coordinates[i]) ** 2))
+            norm = sqrt_(l2_norm_sq_dist(coordinates[j], coordinates[i]))
             distance_matrix[i, j] = norm
             distance_matrix[j, i] = norm
 
-    a0 = -20 * pi / 180
-    a1 = pi + 20 * pi / 180
-    xs = np.linspace(a0, a1, nx)
-    cos_xs = np.cos(xs) * coeff * dgrid
+    a0 = -20 * pi_ / 180
+    a1 = pi_ + 20 * pi_ / 180
+    xs = linspace_(a0, a1, nx)
 
     prefactor = 1.0 / 3.0
     c0 = prefactor * (z1 % 1000) * (z2 % 1000) * (z3 % 1000) * coeff * dgrid
+    cos_xs = cos_(xs) * c0
     inv_sigma = -1.0 / (2 * sigma**2)
 
-    ys = np.zeros(nx)
+    for ia1 in range(len(ias1)):
+        i = ias1[ia1]
+        r_ij = distance_matrix[i, ia_python]
+        if outside_interval(eps, r_ij, rcut):
+            continue
+        if z1 == z3:
+            starting_ia3 = ia1 + 1
+        else:
+            starting_ia3 = 0
+        for ia3 in range(starting_ia3, len(ias3)):
+            k = ias3[ia3]
+            r_ik = distance_matrix[i, k]
+            r_jk = distance_matrix[ia_python, k]
 
-    for ia1 in prange(len(ias1)):
-        for ia3 in range(len(ias3)) if z1 == z3 else range(len(ias3)):
-            i, j, k = ias1[ia1], ia_python, ias3[ia3]
-            if not (
-                eps < distance_matrix[i, j] <= rcut
-                and eps < distance_matrix[i, k] <= rcut
-                and eps < distance_matrix[j, k] <= rcut
-            ):
+            if outside_interval(eps, r_ik, rcut) or outside_interval(eps, r_jk, rcut):
                 continue
-            ang = calc_angle(coordinates[i], coordinates[j], coordinates[k])
-            cak = calc_cos_angle(coordinates[i], coordinates[k], coordinates[j])
-            cai = calc_cos_angle(coordinates[k], coordinates[i], coordinates[j])
-            r = distance_matrix[i, j] * distance_matrix[i, k] * distance_matrix[j, k]
-            ys += (c0 + cos_xs * cak * cai) / (r**3) * exp((xs - ang) ** 2 * inv_sigma)
+            ang = calc_angle(coordinates[i], coordinates[ia_python], coordinates[k])
+            cak = calc_cos_angle(coordinates[i], coordinates[k], coordinates[ia_python])
+            cai = calc_cos_angle(coordinates[k], coordinates[i], coordinates[ia_python])
+            r = r_ij * r_ik * r_jk
+            ys += (c0 + cos_xs * cak * cai) / (r**3) * exp_((xs - ang) ** 2 * inv_sigma)
 
     return ys
 
 
-@njit(parallel=True)
+@jit_
 def get_sbop_local(
     coordinates, nuclear_charges, ia_python, z1, z2, rcut, nx, dgrid, sigma, coeff, rpower
 ):
-    natoms = coordinates.shape[0]
     if coordinates.shape[0] != nuclear_charges.size:
         raise ValueError(
             f"ERROR: Coulomb matrix generation, {coordinates.shape[0]} coordinates, but {nuclear_charges.size} atom_types!"
         )
 
-    ias1 = []
-    ias2 = []
-
-    for i in range(natoms):
-        if int(nuclear_charges[i]) == z1:
-            ias1.append(i)
-        if int(nuclear_charges[i]) == z2:
-            ias2.append(i)
+    ias1 = where_(nuclear_charges == z1)[0]
+    ias2 = where_(nuclear_charges == z2)[0]
 
     r0 = 0.1
-    xs = np.linspace(r0, rcut, nx)
-    ys = np.zeros(nx)
+    xs = linspace_(r0, rcut, nx)
+    ys = zeros_(nx)
 
     c0 = (z1 % 1000) * (z2 % 1000) * coeff
     inv_sigma = -0.5 / sigma**2
     xs0 = c0 / (xs**rpower) * dgrid
 
     rcut2 = rcut**2
-    ia = ia_python + 1
 
-    if z1 == z2:
-        for ia1 in prange(len(ias1)):
-            for ia2 in range(ia1 + 1, len(ias2)):
-                if (ias1[ia1] != ia) and (ias2[ia2] != ia):
-                    r = np.sum((coordinates[ias1[ia1], :] - coordinates[ias2[ia2], :]) ** 2)
-                    if r < rcut2:
-                        ys += xs0 * exp(inv_sigma * (xs - sqrt(r)) ** 2)
-    else:
-        for ia1 in prange(len(ias1)):
-            for ia2 in range(len(ias2)):
-                if (ias1[ia1] != ia) and (ias2[ia2] != ia):
-                    r = np.sum((coordinates[ias1[ia1], :] - coordinates[ias2[ia2], :]) ** 2)
-                    if r < rcut2:
-                        ys += xs0 * exp(inv_sigma * (xs - sqrt(r)) ** 2)
-
+    for ia1 in range(len(ias1)):
+        i = ias1[ia1]
+        if z1 == z2:
+            starting_ia2 = ia1 + 1
+        else:
+            starting_ia2 = 0
+        for ia2 in range(starting_ia2, len(ias2)):
+            j = ias2[ia2]
+            if (i != ia_python) and (j != ia_python):
+                continue
+            r = l2_norm_sq_dist(coordinates[i, :], coordinates[j, :])
+            if r < rcut2:
+                ys += xs0 * exp_(inv_sigma * (xs - sqrt_(r)) ** 2)
     return ys
 
 
@@ -232,7 +241,6 @@ def update_m(obj, ia, rcut=9.0, pbc=None):
     for periodic systems (or very large system)
     """
     zs, coords, c = obj
-    v1, v2, v3 = c
     vs = ssd.norm(c, axis=0)
 
     nns = []
@@ -268,7 +276,7 @@ def update_m(obj, ia, rcut=9.0, pbc=None):
 
     n1s, n2s, n3s = nns
 
-    n123s_ = np.array(list(itl.product(n1s, n2s, n3s)))
+    n123s_ = array_(list(itl.product(n1s, n2s, n3s)))
     n123s = []
     for n123 in n123s_:
         n123u = list(n123)
@@ -276,13 +284,13 @@ def update_m(obj, ia, rcut=9.0, pbc=None):
             n123s.append(n123u)
 
     nau = len(n123s)
-    n123s = np.array(n123s, np.float)
+    n123s = array_(n123s, dtype=dfloat_)
 
     na = len(zs)
     cia = coords[ia]
 
     if na == 1:
-        ds = np.array([[0.0]])
+        ds = array_([[0.0]])
     else:
         ds = ssd.squareform(ssd.pdist(coords))
 
@@ -296,13 +304,13 @@ def update_m(obj, ia, rcut=9.0, pbc=None):
             zs_u.append(zs[i])
             coords_u.append(coords[ia])
 
-            ts = np.zeros((nau, 3))
+            ts = zeros_((nau, 3))
             for iau in range(nau):
-                ts[iau] = np.dot(n123s[iau], c)
+                ts[iau] = dot_(n123s[iau], c)
 
             coords_iu = coords[i] + ts
             dsi = ssd.norm(coords_iu - cia, axis=1)
-            filt = np.logical_and(dsi > 0, dsi <= rcut)
+            filt = logical_and_(dsi > 0, dsi <= rcut)
             nx = filt.sum()
             zs_u += [
                 zs[i],
@@ -317,7 +325,7 @@ def update_m(obj, ia, rcut=9.0, pbc=None):
 
 
 def get_boa(z1, zs_):
-    return z1 * np.array(
+    return z1 * array_(
         [
             (zs_ == z1).sum(),
         ]
@@ -344,7 +352,7 @@ def get_sbop(
     """
 
     z1, z2 = mbtype
-    zs, coords, c = obj
+    zs, coords, _ = obj
 
     if iloc:
         assert ia is not None, "#ERROR: plz specify `za and `ia "
@@ -362,7 +370,7 @@ def get_sbop(
     r0 = 0.1
     nx = int((rcut - r0) / dgrid) + 1
 
-    coeff = 1 / np.sqrt(2 * sigma**2 * np.pi) if normalize else 1.0
+    coeff = 1 / sqrt_(2 * sigma**2 * pi_) if normalize else 1.0
 
     if iloc:
         ys = get_sbop_local(coords, zs, ia, z1, z2, rcut, nx, dgrid, sigma, coeff, rpower)
@@ -383,7 +391,7 @@ def get_sbot(
     """
 
     z1, z2, z3 = mbtype
-    zs, coords, c = obj
+    zs, coords, _ = obj
 
     if iloc:
         assert ia is not None, "#ERROR: plz specify `za and `ia "
@@ -396,12 +404,12 @@ def get_sbot(
         ia = 0
 
     # for a normalized gaussian distribution, u should multiply this coeff
-    coeff = 1 / np.sqrt(2 * sigma**2 * np.pi) if normalize else 1.0
+    coeff = 1 / sqrt_(2 * sigma**2 * pi_) if normalize else 1.0
 
     # Setup grid in Python
-    d2r = np.pi / 180  # degree to rad
+    d2r = pi_ / 180  # degree to rad
     a0 = -20.0 * d2r
-    a1 = np.pi + 20.0 * d2r
+    a1 = pi_ + 20.0 * d2r
     nx = int((a1 - a0) / dgrid) + 1
 
     if iloc:
@@ -461,7 +469,7 @@ def generate_slatm(
     c = unit_cell
     #    iprt = False
     if c is None:
-        c = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        c = array_([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
 
     if pbc != "000":
         # print(' -- handling systems with periodic boundary condition')
@@ -487,13 +495,13 @@ def generate_slatm(
             n1 = 0
             n2 = 0
             n3 = 0
-            mbs_ia = np.zeros(0)
+            mbs_ia = zeros_(0)
             #            icount = 0
             for mbtype in mbtypes:
                 if len(mbtype) == 1:
                     mbsi = get_boa(
                         mbtype[0],
-                        np.array(
+                        array_(
                             [
                                 zs[ia],
                             ]
@@ -504,14 +512,14 @@ def generate_slatm(
                         n1 = 1
                         n1_0 = mbs_ia.shape[0]
                         if n1_0 == 0:
-                            mbs_ia = np.concatenate((mbs_ia, mbsi), axis=0)
+                            mbs_ia = concatenate_((mbs_ia, mbsi), axis=0)
                         elif n1_0 == 1:
                             mbs_ia += mbsi
                         else:
                             raise "#ERROR"
                     else:
                         n1 += len(mbsi)
-                        mbs_ia = np.concatenate((mbs_ia, mbsi), axis=0)
+                        mbs_ia = concatenate_((mbs_ia, mbsi), axis=0)
                 elif len(mbtype) == 2:
                     # print ' 001, pbc = ', pbc
                     mbsi = get_sbop(
@@ -531,7 +539,7 @@ def generate_slatm(
                         n2 = len(mbsi)
                         n2_0 = mbs_ia.shape[0]
                         if n2_0 == n1:
-                            mbs_ia = np.concatenate((mbs_ia, mbsi), axis=0)
+                            mbs_ia = concatenate_((mbs_ia, mbsi), axis=0)
                         elif n2_0 == n1 + n2:
                             t = mbs_ia[n1 : n1 + n2] + mbsi
                             mbs_ia[n1 : n1 + n2] = t
@@ -539,7 +547,7 @@ def generate_slatm(
                             raise "#ERROR"
                     else:
                         n2 += len(mbsi)
-                        mbs_ia = np.concatenate((mbs_ia, mbsi), axis=0)
+                        mbs_ia = concatenate_((mbs_ia, mbsi), axis=0)
                 else:  # len(mbtype) == 3:
                     mbsi = get_sbot(
                         mbtype,
@@ -557,7 +565,7 @@ def generate_slatm(
                         n3 = len(mbsi)
                         n3_0 = mbs_ia.shape[0]
                         if n3_0 == n1 + n2:
-                            mbs_ia = np.concatenate((mbs_ia, mbsi), axis=0)
+                            mbs_ia = concatenate_((mbs_ia, mbsi), axis=0)
                         elif n3_0 == n1 + n2 + n3:
                             t = mbs_ia[n1 + n2 : n1 + n2 + n3] + mbsi
                             mbs_ia[n1 + n2 : n1 + n2 + n3] = t
@@ -565,8 +573,7 @@ def generate_slatm(
                             raise "#ERROR"
                     else:
                         n3 += len(mbsi)
-                        mbs_ia = np.concatenate((mbs_ia, mbsi), axis=0)
-
+                        mbs_ia = concatenate_((mbs_ia, mbsi), axis=0)
             mbs.append(mbs_ia)
             X2N = [n1, n2, n3]
             if X2N not in X2Ns:
@@ -576,7 +583,7 @@ def generate_slatm(
         n1 = 0
         n2 = 0
         n3 = 0
-        mbs = np.zeros(0)
+        mbs = zeros_(0)
         for mbtype in mbtypes:
             if len(mbtype) == 1:
                 mbsi = get_boa(mbtype[0], zs)
@@ -584,14 +591,14 @@ def generate_slatm(
                     n1 = 1
                     n1_0 = mbs.shape[0]
                     if n1_0 == 0:
-                        mbs = np.concatenate((mbs, [sum(mbsi)]), axis=0)
+                        mbs = concatenate_((mbs, [sum(mbsi)]), axis=0)
                     elif n1_0 == 1:
                         mbs += sum(mbsi)
                     else:
                         raise "#ERROR"
                 else:
                     n1 += len(mbsi)
-                    mbs = np.concatenate((mbs, mbsi), axis=0)
+                    mbs = concatenate_((mbs, mbsi), axis=0)
             elif len(mbtype) == 2:
                 mbsi = get_sbop(
                     mbtype, obj, sigma=sigmas[0], dgrid=dgrids[0], rcut=rcut, rpower=rpower
@@ -601,7 +608,7 @@ def generate_slatm(
                     n2 = len(mbsi)
                     n2_0 = mbs.shape[0]
                     if n2_0 == n1:
-                        mbs = np.concatenate((mbs, mbsi), axis=0)
+                        mbs = concatenate_((mbs, mbsi), axis=0)
                     elif n2_0 == n1 + n2:
                         t = mbs[n1 : n1 + n2] + mbsi
                         mbs[n1 : n1 + n2] = t
@@ -609,7 +616,7 @@ def generate_slatm(
                         raise "#ERROR"
                 else:
                     n2 += len(mbsi)
-                    mbs = np.concatenate((mbs, mbsi), axis=0)
+                    mbs = concatenate_((mbs, mbsi), axis=0)
             else:  # len(mbtype) == 3:
                 mbsi = get_sbot(mbtype, obj, sigma=sigmas[1], dgrid=dgrids[1], rcut=rcut)
 
@@ -617,7 +624,7 @@ def generate_slatm(
                     n3 = len(mbsi)
                     n3_0 = mbs.shape[0]
                     if n3_0 == n1 + n2:
-                        mbs = np.concatenate((mbs, mbsi), axis=0)
+                        mbs = concatenate_((mbs, mbsi), axis=0)
                     elif n3_0 == n1 + n2 + n3:
                         t = mbs[n1 + n2 : n1 + n2 + n3] + mbsi
                         mbs[n1 + n2 : n1 + n2 + n3] = t
@@ -625,12 +632,12 @@ def generate_slatm(
                         raise "#ERROR"
                 else:
                     n3 += len(mbsi)
-                    mbs = np.concatenate((mbs, mbsi), axis=0)
+                    mbs = concatenate_((mbs, mbsi), axis=0)
 
-    return mbs
+    return array_(mbs)
 
 
-def get_slatm_mbtypes(nuclear_charges: List[ndarray], pbc: str = "000") -> List[List[int64]]:
+def get_slatm_mbtypes(nuclear_charges: List[ndarray_], pbc: str = "000") -> List[List[int_]]:
     """
     Get the list of minimal types of many-body terms in a dataset. This resulting list
     is necessary as input in the ``generate_slatm_representation()`` function.
@@ -656,13 +663,13 @@ def get_slatm_mbtypes(nuclear_charges: List[ndarray], pbc: str = "000") -> List[
         zs_ravel += zsil
         zsmax.update(zsil)
 
-    zsmax = np.array(list(zsmax))
+    zsmax = array_(list(zsmax))
     nass = []
     for i in range(nm):
-        zsi = np.array(zs[i], np.int32)
+        zsi = array_(zs[i], dtype=dint32_)
         nass.append([(zi == zsi).sum() for zi in zsmax])
 
-    nzmax = np.max(np.array(nass), axis=0)
+    nzmax = max_(array_(nass), axis=0)
     nzmax_u = []
     if pbc != "000":
         # the PBC will introduce new many-body terms, so set
@@ -690,7 +697,7 @@ def get_slatm_mbtypes(nuclear_charges: List[ndarray], pbc: str = "000") -> List[
             for tasi in tas:
                 if (tasi not in bots) and (tasi[::-1] not in bots):
                     nzsi = [(zj == tasi).sum() for zj in zsmax]
-                    if np.all(nzsi <= nzmax):
+                    if all_(nzsi <= nzmax):
                         bots.append(tasi)
     mbtypes = boas + bops + bots
 

@@ -7,6 +7,8 @@
 python=python
 pip=pip
 
+doxygen_main=./doxygen/html/index.html
+
 all: install
 
 dev-env:
@@ -34,8 +36,15 @@ test: test-env
 install:
 	$(pip) install .
 
+$(doxygen_main):
+	$(python) doxygen/run_doxygen.py
+
+docs: $(doxygen_main)
+
 clean:
 	rm -Rf ./build
 	rm -Rf ./dist
 	rm -Rf ./qml2.egg-info
 	rm -Rf ./tests/test_data/perturbed_qm7
+	rm -Rf ./doxygen/html
+	rm -f *.html

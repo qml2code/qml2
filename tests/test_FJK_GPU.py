@@ -4,9 +4,12 @@ from conftest import compare_or_create, int2rng
 from test_FJK import run_single_FJK_pair_test
 
 
-def test_FJK():
-    test_name = "FJK"
+def test_FJK_GPU(use_Huckel=False):
     _ = pytest.importorskip("gpu4pyscf")
+    if use_Huckel:
+        test_name = "FJK_Huckel"
+    else:
+        test_name = "FJK"
 
     d = {
         "single": None,
@@ -17,11 +20,18 @@ def test_FJK():
     checksums_storage = {}
     checksums_rng = int2rng(1)
     for name, kwargs in d.items():
-        run_single_FJK_pair_test(name, kwargs, checksums_storage, checksums_rng, use_gpu=True)
+        run_single_FJK_pair_test(
+            name, kwargs, checksums_storage, checksums_rng, use_gpu=True, use_Huckel=use_Huckel
+        )
     compare_or_create(
         checksums_storage, test_name, max_rel_difference=0.1, partial_comparison=True
     )
 
 
+def test_FJK_GPU_Huckel():
+    test_FJK_GPU(use_Huckel=True)
+
+
 if __name__ == "__main__":
-    test_FJK()
+    test_FJK_GPU()
+    test_FJK_GPU_Huckel()

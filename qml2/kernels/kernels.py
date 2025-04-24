@@ -3,75 +3,104 @@ Expressions for calculating Gaussian, Laplacian, and Matern kernels, both local 
 
 # Kernel types.
 
-For a kernel function named ${kf_name} (\\in ["gaussian", "laplacian", "matern"]) corresponding to function $F$ we have defined:
+For a kernel function named ${kf_name} (\f$\in\f$ ["gaussian", "laplacian", "matern"]) corresponding to function \f$F\f$ we have defined:
 
-${kf_name}_kernel(A, B, sigma, out=None, **kwargs):
-    calculate matrix K such that
-        K_{ij}=F(A_{i}, B_{j}, sigma, **kwargs)
-    Arguments:
-    A, B - arrays or *global* representation vectors of length corresponding to number of molecules in A and B (A_nmols and B_nmols).
-    sigma - float of sigma value or 1D array of sigma values length nsigmas.
-    out - if not None the array will be used for kernel output.
-    **kwargs - see "Implemented $F$ options"
-    Output:
-    If sigma is float return matrix K of dimensionality A_nmols x B_nmols.
-    If sigma is 1D array return tensor K of dimensionality A_nmols x B_nmols x nsigmas, with
-    K_{ijk} corresponding to K_{ij} calculated for sigma_{k}.
+```${kf_name}_kernel(A, B, sigma, out=None, **kwargs):```
+calculate matrix \f$K\f$ such that
 
-${kf_name}_kernel_symmetric(A, sigma, **kwargs):
-    returns ${kf_name}_kernel(A, A, sigma, **kwargs)
+\f[
+K_{ij}=F(A_{i}, B_{j}, \sigma)
+\f]
 
-local_${kf_name}_kernel(A, B, A_natoms, B_natoms, sigma, out=None, **kwargs):
-    calculate matrix K such that
-        K_{ij}=\\sum_{ij}\\sum_{k=1}^{Na_{i}}\\sum_{l=1}^{Nb_{j}}F(A_{ik}, B_{jl}, sigma, **kwargs)
-    where A_{ik}, B_{jl} are representations vectors of atoms k and l in molecules A_{i} and B_{j}, Na_{i} and
-    Nb_{j} are numbers of atoms in molecules A_{i} and B_{j}
+Arguments:
 
-    Arguments:
-    A, B - 2D arrays of *local* representation vectors of molecules concatenated (e.g. via numpy.concatenate) together.
-    A_natoms, B_natoms - 1D integer arrays of number of atoms for each molecule.
-    sigma, out - same as in ${kf_name}_kernel
+- A, B - arrays of *global* representation vectors of length corresponding to number of molecules in A and B (A_nmols and B_nmols).
+- sigma (\f$\sigma\f$) - float of sigma value or 1D array of sigma values length nsigmas.
+- out - if not None the array will be used for kernel output.
+- **kwargs - see "Implemented $F$ options"
 
-    Output:
-    same as in ${kf_name}_kernel
+Output:
+- If \f$\sigma\f$ is float return matrix K of dimensionality A_nmols x B_nmols.
+- If \f$\sigma\f$ is 1D array return tensor K of dimensionality A_nmols x B_nmols x nsigmas, with \f$K_{ijk}\f$ corresponding to \f$K_{ij}\f$ calculated for \f$\sigma_{k}\f$.
 
+
+```${kf_name}_kernel_symmetric(A, sigma, **kwargs):```
+returns ${kf_name}_kernel(A, A, sigma, **kwargs)
+
+local_${kf_name}_kernel(A, B, A_natoms, B_natoms, sigma, out=None, **kwargs): calculate matrix K such that
+
+\f[
+K_{ij}=\sum_{ij}\sum_{k=1}^{Na_{i}}\sum_{l=1}^{Nb_{j}}F(A_{ik}, B_{jl}, \sigma),
+\f]
+
+where \f$A_{ik}\f$, \f$B_{jl}\f$ are representations vectors of atoms \f$k\f$ and \f$l\f$ in molecules \f$A_{i}\f$ and \f$B_{j}\f$, \f$Na_{i}\f$ and \f$Nb_{j}\f$ are numbers of atoms in molecules \f$A_{i}\f$ and \f$B_{j}\f$
+
+Arguments:
+
+- A, B - 2D arrays of *local* representation vectors of molecules concatenated (e.g. via numpy.concatenate) together.
+- A_natoms, B_natoms - 1D integer arrays of number of atoms for each molecule.
+-sigma, out - same as in ${kf_name}_kernel
+
+Output:
+- same as in ${kf_name}_kernel
+
+```
 local_${kf_name}_kernel_symmetric(A, A_natoms, sigma, **kwargs):
-    returns local_${kf_name}_kernel(A, A, A_natoms, A_natoms, sigma, **kwargs)
+```
+returns local_${kf_name}_kernel(A, A, A_natoms, A_natoms, sigma, **kwargs)
 
+```
 local_dn_${kf_name}_kernel(A, B, A_natoms, B_natoms, A_ncharges, B_ncharges, out=None, **kwargs):
-    calculate matrix K such that
-        K_{ij}=\\sum_{ij}\\sum_{k=1}^{{A_natoms}_{i}}\\sum_{l=1}^{{B_natoms}_{j}}F(A_{ik}, B_{jl}, sigma, **kwargs) \\delta(Nca_{ik}-Ncb_{jl})
-    where \\delta is the delta function, Nca_{ik} and Ncb_{jl} are nuclear charges of atoms k and l in molecules i and j.
+```
+calculate matrix \f$K\f$ such that
 
-    Arguments:
-    A, B, A_natoms, B_natoms, sigma, out - same as local_${kf_name}_kernel.
-    A_ncharges, B_ncharges - concatenated (e.g. via numpy.concatenate) nuclear charges arrays of individual molecules.
+\f[
+K_{ij}=\sum_{ij}\sum_{k=1}^{Na_{i}}\sum_{l=1}^{Nb_{j}}F(A_{ik}, B_{jl}, \sigma) \delta(Nca_{ik}-Ncb_{jl}),
+\f]
+where \f$\delta\f$ is the delta function, \f$Nca_{ik}\f$ and \f$Ncb_{jl}\f$ are nuclear charges of atoms \f$k\f$ and \f$l\f$ in molecules \f$A_i\f$ and \f$B_j\f$.
 
+Arguments:
+
+- A, B, A_natoms, B_natoms, sigma, out - same as local_${kf_name}_kernel.
+- A_ncharges, B_ncharges - concatenated (e.g. via numpy.concatenate) nuclear charges arrays of individual molecules.
+
+```
 local_dn_${kf_name}_kernel_symmetric(A, A_natoms, A_ncharges, sigma, **kwargs):
-    returns local_dn_${kf_name}_kernel(A, A, A_natoms, A_natoms, A_ncharges, A_ncharges, sigma, **kwargs)
+```
+returns local_dn_${kf_name}_kernel(A, A, A_natoms, A_natoms, A_ncharges, A_ncharges, sigma, **kwargs)
 
-# Implemented $F$ options
+# Implemented \f$F\f$ options
 
-- Gaussian:
-    F(X1, X2)=exp((X1-X2)**2/2/sigma**2)
-- Laplacian:
-    F(X1, X2)=exp(\\sum_{k}|X1_{k}-X2_{k}|/sigma)
-- Matern:
-    F(X1, X2) depends on the distance r(X1, X2), which, depending on the
-    `metric` keyword set during the kernel calculation, can be L1 ("l1") or L2 ("l2").
-    The `order` keyword for each kernel calculation determines order of the Matern kernel.
-    The implemented values are (writing $rs=r(X1, X2)/sigma$ for short):
-        -0:
-            F(X1, X2, sigma)=exp(-rs)
-        -1:
-            F(X1, X2, sigma)=exp(-rs*sqrt(3))*(1+sqrt(3)*rs)
-        -2:
-            F(X1, X2, sigma)=exp(-rs*sqrt(5))*(1+sqrt(5)*rs+5*rs**2/3)
-COMMENT: Konstantin Karandashev:
-The precompiled function variables are seeminly the best way to capitalize on Python's polymorphism while avoiding
-calls on functions as arguments (they seem to slow the code down a bit). There would be better ways to write this when jitclass moves out of
-experimental and starts supporting __call__.
+- *Gaussian:*
+\f[
+F(X^1, X^2, \sigma)=\exp\left[\frac{(X^1-X^2)^2}{2\sigma^2}\right]
+\f]
+- *Laplacian:*
+\f[
+F(X^1, X^2, \sigma)=\exp\left(\frac{\sum_{k}|X^1_{k}-X^2_{k}|}{\sigma}\right)
+\f]
+- *Matern:* \f$F(X^{1},X^{2})\f$ depends on the distance \f$r(X^{1},X^{2})\f$, which, depending on the `metric` keyword set during the kernel calculation, can be L1 ("l1") or L2 ("l2"). The `order` keyword for each kernel calculation determines order of the Matern kernel. The implemented order values are (writing \f$r_s=r(X^{1},X^{2})/\sigma\f$ for short):
+
+    0:
+\f[
+F(X^1, X^2, \sigma)=\exp(-r_s)
+\f]
+    1:
+\f[
+F(X^1, X^2, \sigma)=\exp(-r_s*\sqrt{3})*(1+\sqrt{3} r_s)
+\f]
+    2:
+\f[
+F(X^1, X^2, \sigma)=\exp(-r_s*\sqrt{5})*(1+\sqrt{5}*r_s+5 r_s^2/3)
+\f]
+
 """
+# COMMENT: Konstantin Karandashev:
+# The precompiled function variables are seeminly the best way to capitalize on Python's polymorphism while avoiding
+# calls on functions as arguments (they seem to slow the code down a bit). There would be better ways to write this when jitclass moves out of
+# experimental and starts supporting __call__.
+
+
 from ..jit_interfaces import (
     constr_dfloat_,
     dim0float_array_,

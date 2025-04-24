@@ -64,6 +64,7 @@ int_ = int
 bool_ = bool
 dfloat_ = torch.float64
 dint_ = torch.int64
+dint32_ = torch.int32
 dbool_ = torch.bool
 ndarray_ = torch.Tensor
 dtype_ = torch.dtype
@@ -347,6 +348,7 @@ def sort_(array: ndarray_):
 
 # logical
 logical_not_ = torch.logical_not
+logical_and_ = torch.logical_and
 any_ = torch.any
 all_ = torch.all
 # common linear operations

@@ -10,8 +10,8 @@ except ImportError:
 
 try:
     # If MOSAiCS (https://github.com/chemspacelab/mosaics) and RdKIT are installed these can be used to check that an xyz's coordinates agree with the SMILES.
+    from mosaics.misc_procedures import InvalidAdjMat
     from mosaics.rdkit_utils import RdKitFailure, SMILES_to_egc
-    from mosaics.valence_treatment import InvalidAdjMat
     from mosaics.xyz2graph import xyz2mol_extgraph
 except ImportError:
     pass
