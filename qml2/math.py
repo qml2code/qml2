@@ -1,4 +1,7 @@
 # For dealing with several Cholesky decompositions at once.
+import numpy as np
+import scipy
+
 from .jit_interfaces import (
     array_,
     cho_factor_,
@@ -10,6 +13,7 @@ from .jit_interfaces import (
     float_,
     jit_,
     logical_not_,
+    lstsq_,
     lu_factor_,
     lu_solve_,
     reshape_,
@@ -38,6 +42,13 @@ def svd_solve(mat, rhs, rcond=0.0):
     """
     U_mat, singular_values, Vh_mat = svd_(mat)
     return solve_from_svd(U_mat, singular_values, Vh_mat, rhs, rcond)
+
+
+@jit_(numba_parallel=True)
+def solve_using_eig(eigenvalues, eigenvectors, rhs):
+    rhs_eigenvectors = dot_(eigenvectors.T, rhs)
+    rhs_eigenvectors /= eigenvalues
+    return dot_(rhs_eigenvectors, eigenvectors.T)
 
 
 def solve_w_reg_factor(
@@ -82,6 +93,32 @@ def lu_solve(A, B, l2reg=None, overwrite_a=False, overwrite_b=False):
     return solve_w_reg_factor(
         A, B, lu_factor_, lu_solve_, l2reg=l2reg, overwrite_a=overwrite_a, overwrite_b=overwrite_b
     )
+
+
+# NOTE K.Karan: Should be replaced with reference to a standard method in numpy/scipy if opportunity arises.
+# At the time of writing I only found such a procedure in the Spectral Python project and I didn't want to add any
+# more additional dependencies.
+def inplace_orthogonalize_vectors(A):
+    """
+    Overwrite matrix A with orthogonal vectors. (If a better routine is available replace.)
+    """
+    _, _, new_basis = scipy.linalg.svd(A, full_matrices=False)
+    A[:, :] = new_basis[:, :]
+
+
+def lstsq_solve(A, B, rcond=None):
+    """
+    A convenient shorthand for just recovering the solution instead of the entire lstsq_ output.
+    """
+    return lstsq_(A, B, rcond=rcond)[0]
+
+
+def svd_aligned(A):
+    """
+    Shorthand for C-contiguous output of scipy.linalg.svd(A, full_matrices=False).
+    """
+    U, s, Vh = scipy.linalg.svd(A, full_matrices=False)
+    return np.ascontiguousarray(U), s, np.ascontiguousarray(Vh)
 
 
 # KK: Accelerates training if you train on several properties that can be sorted in such a way that each property is available for each molecule for which the

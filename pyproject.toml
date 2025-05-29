@@ -3,7 +3,7 @@ requires = ["setuptools >= 61.0"]
 build-backend = "setuptools.build_meta"
 [project]
 name = "qml2"
-version = "0.1.4"
+version = "0.1.5"
 dependencies=[
   "numpy",
   "numba",
@@ -19,9 +19,23 @@ description="Collection of Quantum Machine Learning routines"
 readme="README.md"
 license={text="MIT License"}
 [tool.setuptools]
-packages=["qml2", "qml2.orb_ml", "qml2.representations", "qml2.models", "qml2.jit_interfaces", "qml2.dataset_formats", "qml2.kernels", "qml2.test_utils", "qml2.gpytorch", "qml2.cupy"]
+packages=[
+  "qml2",
+  "qml2.orb_ml",
+  "qml2.representations",
+  "qml2.models",
+  "qml2.jit_interfaces",
+  "qml2.dataset_formats",
+  "qml2.kernels",
+  "qml2.test_utils",
+  "qml2.gpytorch",
+  "qml2.cupy",
+  "qml2.multilevel_sorf",
+  "qml2.multilevel_sorf.processed_object_constructors",
+  "qml2.multilevel_sorf.base_constructors"]
 [project.optional-dependencies]
 torch=["torch"]
 orb_ml=["pyscf", "geometric"]
+msorf=["aalto-boss"]
 [tool.setuptools.package-data]
 qml2 = ["*/*.cu"]

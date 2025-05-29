@@ -6,25 +6,31 @@ from ..jit_interfaces import (
     abs_,
     array_,
     concatenate_,
+    copy_,
     diag_indices_from_,
     dint_,
     dot_,
     empty_,
     exp_,
+    jit_,
     lstsq_,
     max_,
     mean_,
+    prange_,
+    zeros_,
 )
 from ..kernels.gradient_kernels import prediction_vector_length
 from ..kernels.gradient_sorf import generate_local_force_sorf
 from ..kernels.sorf import create_sorf_matrices_diff_species, generate_local_sorf
-from ..math import cho_solve
+from ..math import cho_solve, svd_aligned
 from ..utils import get_sorted_elements, multiply_transposed
 from .forces_utils import combine_energy_forces_rhs, get_importance_multipliers
 from .hyperparameter_optimization import KFoldsMultipleObservables, callable_ninv_MAE_local_dn
+from .loss_functions import MAE
 
 
-# For BO in space of lambda and sigma for local_dn SORF and SORF with forces.
+# For BO in space of lambda and sigma for local_dn SORF and SORF with forces
+# using kfolds analogously to ``qml2.models.hyperparameter_optimization`.
 class callable_ninv_MAE_local_dn_SORF(callable_ninv_MAE_local_dn):
     def __init__(
         self,
@@ -246,16 +252,350 @@ class callable_ninv_MAE_local_dn_forces_SORF(callable_ninv_MAE_local_dn_SORF):
         )
 
         lbound = 0
-        for grad_rep, rel_atom_ids, rel_atom_num in zip(
-            training_grad_representations_list,
-            training_relevant_atom_ids_list,
-            self.training_relevant_atom_nums,
+        for grad_rep, rel_atom_ids in zip(
+            training_grad_representations_list, training_relevant_atom_ids_list
         ):
             ubound = lbound + grad_rep.shape[0]
-            self.training_grad_representations[lbound:ubound, :, :rel_atom_num, :] = grad_rep[
-                :, :, :rel_atom_num, :
-            ]
-            self.training_relevant_atom_ids[lbound:ubound, :rel_atom_num] = rel_atom_ids[
-                :, :rel_atom_num
+            cur_max_rel_atom_num = max_(self.training_relevant_atom_nums[lbound:ubound])
+            self.training_grad_representations[
+                lbound:ubound, :, :cur_max_rel_atom_num, :
+            ] = grad_rep[:, :, :cur_max_rel_atom_num, :]
+            self.training_relevant_atom_ids[lbound:ubound, :cur_max_rel_atom_num] = rel_atom_ids[
+                :, :cur_max_rel_atom_num
             ]
             lbound = ubound
+
+
+# Formula for calculating the "leave-one-out errors" without gradients.
+# Main building block for optimization in qml2.multilevel_sorf
+def mult_by_importance(arr, importance_multipliers=None):
+    if importance_multipliers is None:
+        return arr
+    if arr is None:
+        return None
+    out = copy_(arr)
+    multiply_transposed(out, importance_multipliers)
+    return out
+
+
+@jit_(numba_parallel=True)
+def get_stat_factors(Z_U, eigenvalue_multipliers):
+    nmols = Z_U.shape[0]
+    output = empty_((nmols,))
+    transformed_inv_K_Z = eigenvalue_multipliers * Z_U
+    for i in prange_(nmols):
+        output[i] = 1 / (1 - dot_(Z_U[i], transformed_inv_K_Z[i]))
+    return output, transformed_inv_K_Z
+
+
+@jit_
+def leaveoneout_errors_from_precalc(reproduced_quantities, quantities, stat_factors):
+    return (reproduced_quantities - quantities) * stat_factors
+
+
+@jit_
+def leaveoneout_eigenvalue_multipliers(Z_singular_values, l2reg):
+    sq_Z_singular_values = Z_singular_values**2
+    return sq_Z_singular_values / (sq_Z_singular_values + l2reg)
+
+
+def leaveoneout_errors(
+    Z_matrix,
+    quantities,
+    l2reg,
+    importance_multipliers=None,
+    return_intermediates=False,
+    Z_U=None,
+    Z_singular_values=None,
+    Z_Vh=None,
+):
+    used_quantities = mult_by_importance(quantities, importance_multipliers=importance_multipliers)
+
+    if (Z_singular_values is None) or (Z_Vh is None) or (Z_U is None):
+        used_Z_matrix = mult_by_importance(Z_matrix, importance_multipliers=importance_multipliers)
+        Z_U, Z_singular_values, Z_Vh = svd_aligned(used_Z_matrix)
+
+    eigenvalue_multipliers = leaveoneout_eigenvalue_multipliers(Z_singular_values, l2reg)
+
+    stat_factors, transformed_inv_K_Z = get_stat_factors(Z_U, eigenvalue_multipliers)
+
+    transformed_alphas_rhs = dot_(used_quantities, Z_U)
+
+    reproduced_quantities = dot_(transformed_inv_K_Z, transformed_alphas_rhs)
+
+    errors = leaveoneout_errors_from_precalc(reproduced_quantities, used_quantities, stat_factors)
+
+    if return_intermediates:
+        return (
+            errors,
+            Z_U,
+            Z_Vh,
+            Z_singular_values,
+            eigenvalue_multipliers,
+            reproduced_quantities,
+            stat_factors,
+            transformed_alphas_rhs,
+            transformed_inv_K_Z,
+            used_quantities,
+        )
+    else:
+        return errors
+
+
+@jit_(numba_parallel=True)
+def leaveoneout_loss_l2reg_der(
+    eigenvalue_multipliers,
+    Z_singular_values,
+    loss_error_ders,
+    Z_U,
+    reproduced_quantities,
+    transformed_alphas_rhs,
+    stat_factors,
+    used_quantities,
+):
+    eigenvalue_multiplier_derivatives = -((eigenvalue_multipliers / Z_singular_values) ** 2)
+    mult_transformed_alphas_rhs_ders = transformed_alphas_rhs * eigenvalue_multiplier_derivatives
+    reproduced_quantities_ders = dot_(Z_U, mult_transformed_alphas_rhs_ders)
+    npoints = Z_singular_values.shape[0]
+    stat_factor_ders = empty_(npoints)
+    for i in prange_(npoints):
+        stat_factor_ders[i] = stat_factors[i] ** 2 * dot_(
+            Z_U[i] * eigenvalue_multiplier_derivatives, Z_U[i]
+        )
+    error_ders = (
+        stat_factor_ders * (reproduced_quantities - used_quantities)
+        + reproduced_quantities_ders * stat_factors
+    )
+    return dot_(
+        error_ders,
+        loss_error_ders,
+    )
+
+
+@jit_
+def leaveoneout_errors_quantity_ders(
+    quantity_derivatives, Z_U, eigenvalue_multipliers, stat_factors, importance_multipliers
+):
+    if importance_multipliers is None:
+        weighted_quantity_derivatives = quantity_derivatives
+    else:
+        weighted_quantity_derivatives = copy_(quantity_derivatives)
+        multiply_transposed(weighted_quantity_derivatives, importance_multipliers)
+    error_ders = (
+        dot_(
+            Z_U,
+            (dot_(weighted_quantity_derivatives.T, Z_U) * eigenvalue_multipliers).T,
+        )
+        - weighted_quantity_derivatives
+    )
+    multiply_transposed(error_ders, stat_factors)
+    return error_ders
+
+
+@jit_
+def leaveoneout_loss_quantity_ders(
+    quantity_derivatives,
+    loss_error_ders,
+    Z_U,
+    eigenvalue_multipliers,
+    stat_factors,
+    importance_multipliers,
+):
+    return dot_(
+        loss_error_ders,
+        leaveoneout_errors_quantity_ders(
+            quantity_derivatives, Z_U, eigenvalue_multipliers, stat_factors, importance_multipliers
+        ),
+    )
+
+
+@jit_
+def leaveoneout_loss_der_wrt_single_feature(
+    output_arr,
+    feature_ders,
+    feature_id,
+    Z_U,
+    Z_Vh,
+    Z_singular_values,
+    loss_error_ders,
+    mult_transformed_alphas_rhs,
+    reproduced_quantities,
+    stat_factors,
+    transformed_inv_K_Z,
+    used_quantities,
+):
+    # transform derivatives
+    transformed_feature_ders = dot_(feature_ders, Z_Vh.T) / Z_singular_values
+    # resulting change of alphas RHS
+    npoints = used_quantities.shape[0]
+    # remaining derivative w.r.t. feature_vector in feature_vector*alphas.
+    stat_der_mult = loss_error_ders[feature_id] * stat_factors[feature_id]
+    output_arr[:] = stat_der_mult * dot_(transformed_feature_ders, mult_transformed_alphas_rhs)
+    # extra from stat_factors in error corresponding to feature id
+    output_arr += (
+        2
+        * (reproduced_quantities[feature_id] - used_quantities[feature_id])
+        * stat_factors[feature_id]
+        * stat_der_mult
+        * dot_(transformed_feature_ders, transformed_inv_K_Z[feature_id])
+    )
+    # remaining derivative w.r.t. feature_vector in stat_factors[feature_id]
+    # derivatives caused by change of alphas RHS and stat factors.
+    for i in range(npoints):
+        stat_der_mult = loss_error_ders[i] * stat_factors[i]
+
+        inv_K_Z_der_Z = dot_(transformed_feature_ders, transformed_inv_K_Z[i])
+        inv_K_Z_Z = dot_(Z_U[feature_id], transformed_inv_K_Z[i])
+        # derivatives due to stat factors
+        repr_err = reproduced_quantities[i] - used_quantities[i]
+        output_arr -= 2 * stat_der_mult * repr_err * stat_factors[i] * inv_K_Z_der_Z * inv_K_Z_Z
+        # derivatives due to change of alphas RHS
+        output_arr += used_quantities[feature_id] * inv_K_Z_der_Z * stat_der_mult
+        # derivatives due to K^{-1} multiplying alphas RHS
+        output_arr -= (
+            stat_der_mult * inv_K_Z_der_Z * dot_(mult_transformed_alphas_rhs, Z_U[feature_id])
+        )
+        output_arr -= (
+            stat_der_mult * inv_K_Z_Z * dot_(transformed_feature_ders, mult_transformed_alphas_rhs)
+        )
+
+
+@jit_(numba_parallel=True)
+def leaveoneout_loss_der_wrt_features(
+    Z_matrix_derivatives,
+    Z_U,
+    Z_Vh,
+    Z_singular_values,
+    loss_error_ders,
+    mult_transformed_alphas_rhs,
+    reproduced_quantities,
+    stat_factors,
+    transformed_inv_K_Z,
+    used_quantities,
+    importance_multipliers,
+):
+    npoints = Z_matrix_derivatives.shape[0]
+    nders = Z_matrix_derivatives.shape[1]
+
+    output = zeros_((nders,))
+    for i in prange_(npoints):
+        temp_der = empty_((nders,))
+        leaveoneout_loss_der_wrt_single_feature(
+            temp_der,
+            Z_matrix_derivatives[i],
+            i,
+            Z_U,
+            Z_Vh,
+            Z_singular_values,
+            loss_error_ders,
+            mult_transformed_alphas_rhs,
+            reproduced_quantities,
+            stat_factors,
+            transformed_inv_K_Z,
+            used_quantities,
+        )
+        if importance_multipliers is not None:
+            temp_der *= importance_multipliers[i]
+        output += temp_der
+    return output
+
+
+# Expression written in a way best for only storing SORF derivatives for one entry at a time during summation.
+def leaveoneout_error_loss(
+    Z_matrix,
+    quantities,
+    l2reg,
+    error_loss=MAE(),
+    Z_matrix_derivatives=None,
+    quantity_derivatives=None,
+    gradient=False,
+    importance_multipliers=None,
+    return_errors=False,
+    Z_U=None,
+    Z_singular_values=None,
+    Z_Vh=None,
+):
+    if not gradient:
+        loo_errors = leaveoneout_errors(
+            Z_matrix,
+            quantities,
+            l2reg,
+            importance_multipliers=importance_multipliers,
+            Z_U=Z_U,
+            Z_singular_values=Z_singular_values,
+            Z_Vh=Z_Vh,
+        )
+        loss = error_loss(loo_errors)
+        if return_errors:
+            return loss, loo_errors
+        else:
+            return loss
+    (
+        loo_errors,
+        Z_U,
+        Z_Vh,
+        Z_singular_values,
+        eigenvalue_multipliers,
+        reproduced_quantities,
+        stat_factors,
+        transformed_alphas_rhs,
+        transformed_inv_K_Z,
+        used_quantities,
+    ) = leaveoneout_errors(
+        Z_matrix,
+        quantities,
+        l2reg,
+        importance_multipliers=importance_multipliers,
+        return_intermediates=True,
+        Z_U=Z_U,
+        Z_singular_values=Z_singular_values,
+        Z_Vh=Z_Vh,
+    )
+    loss, loss_error_ders = error_loss.calc_wders(loo_errors)
+
+    nders = 1
+    if Z_matrix_derivatives is not None:
+        nZ_ders = Z_matrix_derivatives.shape[1]
+        nders += nZ_ders
+    if quantity_derivatives is not None:
+        nquant_ders = quantity_derivatives.shape[1]
+        nders += nquant_ders
+    loss_ders = empty_(nders)
+    # l2reg derivatives
+    loss_ders[0] = leaveoneout_loss_l2reg_der(
+        eigenvalue_multipliers,
+        Z_singular_values,
+        loss_error_ders,
+        Z_U,
+        reproduced_quantities,
+        transformed_alphas_rhs,
+        stat_factors,
+        used_quantities,
+    )
+    if Z_matrix_derivatives is not None:
+        mult_transformed_alphas_rhs = transformed_alphas_rhs * eigenvalue_multipliers
+        loss_ders[1 : nZ_ders + 1] = leaveoneout_loss_der_wrt_features(
+            Z_matrix_derivatives,
+            Z_U,
+            Z_Vh,
+            Z_singular_values,
+            loss_error_ders,
+            mult_transformed_alphas_rhs,
+            reproduced_quantities,
+            stat_factors,
+            transformed_inv_K_Z,
+            used_quantities,
+            importance_multipliers,
+        )
+    if quantity_derivatives is not None:
+        loss_ders[-nquant_ders:] = leaveoneout_loss_quantity_ders(
+            quantity_derivatives,
+            loss_error_ders,
+            Z_U,
+            eigenvalue_multipliers,
+            stat_factors,
+            importance_multipliers,
+        )
+    if return_errors:
+        return loss, loss_ders, loo_errors
+    return loss, loss_ders

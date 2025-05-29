@@ -1,15 +1,11 @@
-# The script will generate a trial dataset of Lennard-Jones particles (1 possible element,
-# between 3 and 4 atoms), then apply SORF and OQML approaches to try ML their forces and energies,
-# and then compare the force and energy MAEs.
+# The script works analogously to ex_calculate_forces.py, but uses sigma optimized with SORF.
 import numpy as np
 from boss.bo.bo_main import BOMain
 
 from qml2 import Compound
 from qml2.compound_list import CompoundList
 from qml2.models.hyperparameter_init_guesses import vector_std
-from qml2.models.krr_forces import OQMLModel
-from qml2.models.oqml_hyperparameter_optimization import callable_ninv_MAE_local_dn_OQML
-from qml2.models.sorf_forces import SORFLocalForcesModel
+from qml2.models.krr_forces import GPRForceModel
 from qml2.models.sorf_hyperparameter_optimization import callable_ninv_MAE_local_dn_forces_SORF
 from qml2.test_utils.lennard_jones_potential import lj_energy_force, random_lj_molecule
 
@@ -119,25 +115,6 @@ sorf_relative_lambda_val, sorf_sigma = np.exp(sorf_ln_param_min)
 print("Optimized SORF hyperparameters:")
 print(sorf_relative_lambda_val, sorf_sigma)
 
-# OQML hyperparameters
-ninv_MAE = callable_ninv_MAE_local_dn_OQML(
-    train_rep_list,
-    train_ncharges_list,
-    train_grad_rep_list,
-    train_rel_atoms_list,
-    train_rel_atom_nums_list,
-    train_ens,
-    train_forces_list,
-    energy_importance=energy_importance,
-    nkfolds=nkfolds,
-    training_set_ratio=training_set_ratio,
-)
-bo = BOMain(ninv_MAE, [log_sigma_search_bounds], **bo_kwargs)
-res = bo.run()
-oqml_ln_param_min = res.select("x_glmin", -1)
-oqml_sigma = np.exp(oqml_ln_param_min)[0]
-print("Optimized OQML sigma:", oqml_sigma)
-
 # Create test dataset.
 test_set_size = 20
 
@@ -165,18 +142,13 @@ def en_forces_MAE(energy_predictions, force_predictions):
 
 
 # Train and test SORF model.
-
-sorf_model = SORFLocalForcesModel(
-    npcas=init_size,
-    nfeatures=nfeature_stacks * init_size,
-    ntransforms=ntransforms,
+gpr_model = GPRForceModel(
     l2reg_diag_ratio=sorf_relative_lambda_val,
     sigma=sorf_sigma,
-    sorted_elements=possible_nuclear_charges,
     energy_importance=energy_importance,
     rep_kwargs=rep_kwargs,
 )
-sorf_model.train_from_rep_lists(
+gpr_model.train_from_rep_lists(
     train_rep_list,
     train_grad_rep_list,
     train_rel_atoms_list,
@@ -186,7 +158,7 @@ sorf_model.train_from_rep_lists(
     train_forces_list,
 )
 
-sorf_energy_predictions, sorf_force_predictions = sorf_model.predict_from_rep_lists(
+gpr_energy_predictions, gpr_force_predictions = gpr_model.predict_from_rep_lists(
     test_ncharges_list,
     test_rep_list,
     test_grad_rep_list,
@@ -194,29 +166,5 @@ sorf_energy_predictions, sorf_force_predictions = sorf_model.predict_from_rep_li
     test_rel_atom_nums_list,
 )
 
-print("SORF energy and force MAEs:")
-print(*en_forces_MAE(sorf_energy_predictions, sorf_force_predictions))
-
-# Train and test OQML model.
-oqml_model = OQMLModel(
-    sigma=oqml_sigma, energy_importance=energy_importance, rep_kwargs=rep_kwargs
-)
-oqml_model.train_from_rep_lists(
-    train_rep_list,
-    train_grad_rep_list,
-    train_rel_atoms_list,
-    train_rel_atom_nums_list,
-    train_ncharges_list,
-    train_ens,
-    train_forces_list,
-)
-
-oqml_energy_predictions, oqml_force_predictions = oqml_model.predict_from_rep_lists(
-    test_ncharges_list,
-    test_rep_list,
-    test_grad_rep_list,
-    test_rel_atoms_list,
-    test_rel_atom_nums_list,
-)
-print("OQML energy and force MAEs:")
-print(*en_forces_MAE(oqml_energy_predictions, oqml_force_predictions))
+print("GPR energy and force MAEs:")
+print(*en_forces_MAE(gpr_energy_predictions, gpr_force_predictions))

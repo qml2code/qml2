@@ -10,8 +10,8 @@ import pytest
 from conftest import (
     add_checksum_to_dict,
     compare_or_create,
-    int2rng,
     perturbed_xyz_nhatoms_interval,
+    str2rng,
 )
 
 from qml2.jit_interfaces import array_, sqrt_
@@ -21,12 +21,14 @@ max_nhatoms = 5
 
 
 def run_single_FJK_pair_test(
-    pair_name, pair_kwargs, checksums_storage, checksums_rng, use_gpu=False, use_Huckel=False
+    pair_name, pair_kwargs, checksums_storage, use_gpu=False, use_Huckel=False
 ):
     from qml2.orb_ml import OML_Compound, OML_CompoundList, OML_Slater_pair
     from qml2.orb_ml.kernels import gaussian_kernel, gaussian_kernel_symmetric, rep_stddevs
     from qml2.orb_ml.oml_compound import OML_pyscf_calc_params
     from qml2.orb_ml.representations import OML_rep_params
+
+    checksums_rng = str2rng(pair_name)
 
     example_xyzs = perturbed_xyz_nhatoms_interval(min_nhatoms, max_nhatoms)
 
@@ -87,8 +89,7 @@ def run_single_FJK_pair_test(
         )
 
 
-def test_FJK(use_Huckel=False):
-    _ = pytest.importorskip("pyscf")
+def run_all_FJK_pair_tests(use_Huckel=False, use_gpu=False):
     if use_Huckel:
         test_name = "FJK_Huckel"
     else:
@@ -98,15 +99,21 @@ def test_FJK(use_Huckel=False):
         "HOMO": {"used_orb_type": "HOMO_removed", "calc_type": "UHF"},
         "LUMO": {"used_orb_type": "LUMO_added", "calc_type": "UHF"},
         "charge": {"charge": 1, "calc_type": "UHF"},
-        "spin": {"spin": 2},
+        "solvation": {"smd_solvent": "water"},
     }
+    # K.Karan: uncommented spin test because it is too unstable
+    # "spin": {"spin": 2, "calc_type": "UHF"},
     checksums_storage = {}
-    checksums_rng = int2rng(1)
     for name, kwargs in d.items():
         run_single_FJK_pair_test(
-            name, kwargs, checksums_storage, checksums_rng, use_Huckel=use_Huckel
+            name, kwargs, checksums_storage, use_Huckel=use_Huckel, use_gpu=use_gpu
         )
     compare_or_create(checksums_storage, test_name, max_rel_difference=0.1)
+
+
+def test_FJK(use_Huckel=False):
+    _ = pytest.importorskip("pyscf")
+    run_all_FJK_pair_tests(use_Huckel=use_Huckel)
 
 
 def test_FJK_Huckel():

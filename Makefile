@@ -34,7 +34,7 @@ test: test-env
 	$(python) -m pytest -rs ./tests
 
 install:
-	$(pip) install .
+	$(pip) install .$(OPT)
 
 $(doxygen_main):
 	$(python) doxygen/run_doxygen.py

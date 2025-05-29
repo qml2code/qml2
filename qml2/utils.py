@@ -10,16 +10,24 @@ from .jit_interfaces import (
     abs_,
     all_tuple_dim_smaller_,
     append_,
+    arange_,
+    argmin_,
+    argsort_,
+    concatenate_,
     delete_,
     dfloat_,
     dim0int_array_,
     dint_,
+    dot_,
     dtype_,
     empty_,
+    get_num_threads_,
     int_,
     is_scalar_,
     jit_,
     logical_not_,
+    max_,
+    min_,
     ndarray_,
     prange_,
     searchsorted_,
@@ -103,6 +111,13 @@ def get_sorted_elements(ncharges: ndarray_, dint_: dtype_ = dint_):
     return output
 
 
+def concatenate_wNone_(arr1, arr2):
+    if arr1 is None:
+        return arr2
+    else:
+        return concatenate_([arr1, arr2])
+
+
 @jit_
 def check_allocation(
     size_tuple: DimsSequenceType_, output: Union[ndarray_, None] = None, dtype: dtype_ = dfloat_
@@ -153,9 +168,61 @@ def l2_norm_sq_dist(vec1, vec2):
 
 
 @jit_
+def tr_mult(A, B):
+    output = 0.0
+    for i in prange_(A.shape[0]):
+        temp = dot_(A[i], B[i])
+        output += temp
+    return output
+
+
+@jit_
+def all_l2_sq_norms(vecs):
+    nvecs = vecs.shape[0]
+    sq_norms = empty_(nvecs)
+    for i in prange_(nvecs):
+        sq_norms[i] = l2_sq_norm(vecs[i])
+    return sq_norms
+
+
+@jit_
 def multiply_transposed(mat, vec):
     for i in prange_(vec.shape[0]):
         mat[i] *= vec[i]
+
+
+# Routines introduced to counter Numba creating too many nested parallel loops.
+
+
+@jit_
+def serial_add(a, b, mult=None):
+    for i in range(a.shape[0]):
+        if mult is None:
+            a[i] += b[i]
+        else:
+            a[i] += b[i] * mult
+
+
+@jit_
+def serial_dot_2D_1D(arr_2D, arr_1D, out):
+    for i in range(out.shape[0]):
+        out[i] = dot_(arr_2D[i], arr_1D)
+
+
+# for rounding up to powers of 2 (for SORF)
+@jit_
+def is_power2(n):
+    return n & (n - 1) == 0
+
+
+@jit_
+def roundup_power2(n):
+    if is_power2(n):
+        return n
+    output = 1
+    while output < n:
+        output *= 2
+    return output
 
 
 #   XYZ processing.
@@ -177,7 +244,12 @@ def checked_input_readlines(file_input):
 
 
 def write_compound_to_xyz_file(compound, xyz_file_name):
-    write_xyz_file(compound.coordinates, xyz_file_name, elements=compound.atomtypes)
+    write_xyz_file(
+        compound.coordinates,
+        xyz_file_name,
+        elements=compound.atomtypes,
+        nuclear_charges=compound.nuclear_charges,
+    )
 
 
 def xyz_string(coordinates, elements=None, nuclear_charges=None, extra_string=""):
@@ -298,20 +370,94 @@ class weighted_array(list):
         self.normalize_rhos()
         self.sort_rhos()
 
-    def cutoff_minor_weights(self, remaining_rho=None):
-        if (remaining_rho is not None) and (len(self) > 1):
-            ignored_rhos = 0.0
-            for remaining_length in range(len(self), 0, -1):
-                upper_cutoff = self[remaining_length - 1].rho
-                cut_rho = upper_cutoff * remaining_length + ignored_rhos
-                if cut_rho > (1.0 - remaining_rho):
-                    density_cut = (1.0 - remaining_rho - ignored_rhos) / remaining_length
-                    break
-                else:
-                    ignored_rhos += upper_cutoff
-            del self[remaining_length:]
-            for el_id in range(remaining_length):
-                self[el_id].rho = max(
-                    0.0, self[el_id].rho - density_cut
-                )  # max was introduced in case there is some weird numerical noise.
-            self.normalize_rhos()
+    def normalize_sort_rhos_wcutoff(self, remaining_rho=None, rho_cut=None):
+        self.normalize_sort_rhos()
+        if ((remaining_rho is None) and (rho_cut is None)) or (len(self) <= 1):
+            return
+        if rho_cut is None:
+            rho_cut = 1.0 - remaining_rho
+        ignored_rhos = 0.0
+        for remaining_length in range(len(self), 0, -1):
+            upper_cutoff = self[remaining_length - 1].rho
+            rho_cut_lower_estimate = upper_cutoff * remaining_length + ignored_rhos
+            if rho_cut_lower_estimate > rho_cut:
+                density_cut = (rho_cut - ignored_rhos) / remaining_length
+                break
+            else:
+                ignored_rhos += upper_cutoff
+        del self[remaining_length:]
+        for el_id in range(remaining_length):
+            self[el_id].rho = max(
+                0.0, self[el_id].rho - density_cut
+            )  # max was introduced in case there is some weird numerical noise.
+        self.normalize_rhos()
+
+
+# For equally distributing load among Numba threads.
+@jit_
+def check_num_threads(nprocs):
+    if nprocs is None:
+        return get_num_threads_()
+    else:
+        return nprocs
+
+
+@jit_
+def get_thread_assignments(load_arr, nprocs=None):
+    """
+    Take the relative CPU times of different jobs provided in load_arr and distribute them to different processes according to
+    longest-processing-time-first algorithm.
+
+    Taken from:
+    https://en.wikipedia.org/wiki/Longest-processing-time-first_scheduling
+    """
+    used_nprocs = check_num_threads(nprocs)
+    sorted_ids = argsort_(load_arr)[::-1]
+    thread_assignments = empty_(load_arr.shape, dtype=dint_)
+    nels = sorted_ids.shape[0]
+    process_loads = zeros_(used_nprocs)
+    for i in range(nels):
+        true_id = sorted_ids[i]
+        true_val = load_arr[true_id]
+        min_sum = argmin_(process_loads)
+        thread_assignments[true_id] = min_sum
+        process_loads[min_sum] += true_val
+    return thread_assignments
+
+
+@jit_
+def get_assigned_jobs(process_id, njobs, thread_assignments=None):
+    nprocesses = get_num_threads_()
+    if thread_assignments is None:
+        process_load = njobs // nprocesses
+        remainder = njobs % nprocesses
+        if process_id < remainder:
+            process_load += 1
+            return arange_(process_load * process_id, process_load * (process_id + 1), dtype=dint_)
+        else:
+            return arange_(
+                process_load * process_id + remainder,
+                process_load * (process_id + 1) + remainder,
+                dtype=dint_,
+            )
+    else:
+        assert len(thread_assignments.shape) == 1
+        assert min_(thread_assignments) >= 0
+        assert max_(thread_assignments) < njobs
+        return where_(thread_assignments == process_id)[0]
+
+
+@jit_
+def get_thread_assignments_cpu_loads(load_arr, nprocs=None):
+    used_nprocs = check_num_threads(nprocs)
+    thread_assignments = get_thread_assignments(load_arr, nprocs=used_nprocs)
+    thread_cpu_loads = empty_(used_nprocs)
+    for i in range(used_nprocs):
+        cur_indices = get_assigned_jobs(i, used_nprocs, thread_assignments=thread_assignments)
+        thread_cpu_loads[i] = sum_(load_arr[cur_indices])
+    return thread_assignments, thread_cpu_loads
+
+
+@jit_
+def proc_prange_():
+    return prange_(get_num_threads_())

@@ -451,9 +451,8 @@ def OML_orb_rep_from_coeffs(
         orb_atom_reps.append(cur_orb_atom_rep)
     orb_atom_reps = weighted_array(orb_atom_reps)
 
-    orb_atom_reps.normalize_sort_rhos()
     # Try to decrease the number of atomic representations, leaving only the most relevant ones.
-    orb_atom_reps.cutoff_minor_weights(remaining_rho=rep_params.orb_atom_rho_comp)
+    orb_atom_reps.normalize_sort_rhos_wcutoff(remaining_rho=rep_params.orb_atom_rho_comp)
     for orb_arep_counter in range(len(orb_atom_reps)):
         orb_atom_reps[orb_arep_counter].completed_scalar_reps(
             orb_coeffs, rep_params, angular_momenta, coup_mats

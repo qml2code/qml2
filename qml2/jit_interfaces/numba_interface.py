@@ -2,7 +2,7 @@ import multiprocessing as multiprocessing_
 from typing import List, Optional, Tuple, Union
 
 import numpy as np
-from numba import jit, prange
+from numba import get_num_threads, jit, prange
 from scipy.linalg import cho_factor, cho_solve, lu_factor, lu_solve
 
 from .jit_manager import defined_jit_, numba_flag
@@ -18,6 +18,8 @@ LinAlgError_ = np.linalg.LinAlgError
 concatenate_ = np.concatenate
 
 array_jittable_ = np.array
+
+get_num_threads_ = get_num_threads
 
 
 # For compatibility when compiled with Torch.
@@ -108,6 +110,7 @@ zeros_ = np.zeros
 ones_ = np.ones
 eye_ = np.eye
 repeat_ = np.repeat
+arange_ = np.arange
 
 # random-related
 random_ = np.random.random
@@ -141,11 +144,15 @@ def elements_where_(val_arr, bool_arr):
 
 argsort_ = np.argsort
 diag_indices_from_ = np.diag_indices_from
+trace_ = np.trace
+
 append_ = np.append
 delete_ = np.delete
 searchsorted_ = np.searchsorted
 max_ = np.max
 min_ = np.min
+argmin_ = np.argmin
+argmax_ = np.argmax
 sign_ = np.sign
 floor_ = np.floor
 mean_ = np.mean

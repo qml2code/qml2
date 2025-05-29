@@ -5,7 +5,9 @@ from typing import List
 import numpy as np
 from numpy import ndarray
 
+from ..jit_interfaces import mean_, std_
 from .hyperparameter_optimization import MAE_lambda_derivative
+from .loss_functions import MAE
 
 
 def learning_curve_KRR(
@@ -63,3 +65,26 @@ def learning_curve_KRR(
         stddev = np.std(MAEs_line)
         MAEs_avs_std.append((av, stddev))
     return MAEs, MAEs_avs_std
+
+
+# TODO: combine learning_curve from .multilevel_sorf.models with this.
+def learning_curve_from_predictions(
+    all_predictions, test_quantities, error_loss_function=MAE(), test_importance_multipliers=None
+):
+    """
+    K.Karan: a common function for different model classes.
+    """
+    loss_means = []
+    loss_stds = []
+    for subset_predictions in all_predictions:
+        subset_losses = []
+        for predictions in subset_predictions:
+            errors = predictions - test_quantities
+            if test_importance_multipliers is not None:
+                errors *= test_importance_multipliers
+            subset_losses.append(error_loss_function(errors))
+        MAE_mean = mean_(subset_losses)
+        MAE_std = std_(subset_losses)
+        loss_means.append(MAE_mean)
+        loss_stds.append(MAE_std)
+    return loss_means, loss_stds

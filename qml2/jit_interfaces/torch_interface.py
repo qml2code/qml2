@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from torch import tensor
+from torch import get_num_threads, tensor
 
 from ..basic_utils import checked_environ_val
 from .jit_manager import defined_jit_, torch_flag
@@ -15,6 +15,8 @@ torch_default_device_env_name = "QML2_DEFAULT_TORCH_DEVICE"
 torch.set_default_dtype(torch.float64)
 
 multiprocessing_ = torch.multiprocessing
+
+get_num_threads_ = get_num_threads
 
 
 # Pool_ = multiprocessing_.Pool
@@ -169,6 +171,7 @@ def delete_(tensor, slice, axis=0):
 empty_ = torch.empty
 zeros_ = torch.zeros
 ones_ = torch.ones
+arange_ = torch.arange
 
 
 @jit_
@@ -250,6 +253,9 @@ def diag_indices_from_(mat):
     return (l, l)
 
 
+trace_ = torch.trace
+
+
 # WARNING: Think more about copy_/copy_detached_ usage.
 @jit_
 def copy_(tensor):
@@ -322,6 +328,8 @@ def concatenate_(arrays: List[ndarray_], axis: int_ = 0, out: Union[ndarray_, No
 
 max_ = torch.max
 min_ = torch.min
+argmin_ = torch.argmin
+argmax_ = torch.argmax
 sign_ = torch.sign
 floor_ = torch.floor
 

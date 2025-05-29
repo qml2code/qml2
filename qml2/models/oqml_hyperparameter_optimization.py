@@ -5,8 +5,6 @@ from .hyperparameter_optimization import KFolds, KFoldsMultipleObservables
 from .sorf_hyperparameter_optimization import callable_ninv_MAE_local_dn_forces_SORF
 
 
-# For optimizing hyperparameters for Qperator Quantum Machine Learning (OQML).
-# Based on SORF due to formula similarities.
 class callable_ninv_MAE_local_dn_OQML(callable_ninv_MAE_local_dn_forces_SORF):
     def __init__(
         self,
@@ -22,6 +20,9 @@ class callable_ninv_MAE_local_dn_OQML(callable_ninv_MAE_local_dn_forces_SORF):
         lstsq_rcond=0.0,
         **kfold_kwargs,
     ):
+        """
+        For optimizing hyperparameters for Qperator Quantum Machine Learning (OQML). Based on SORF due to formula similarities.
+        """
         self.energy_importance = energy_importance
         self.use_lstsq = use_lstsq
         self.lstsq_rcond = lstsq_rcond

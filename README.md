@@ -14,10 +14,23 @@ or, if `makefile` is installed,
    ```bash
    make install
    ```
-**NOTE:** Using FJK representation or constructing adaptive basis sets additionally requires installing `pyscf` package via
+Some parts of the code depend on additional dependencies that can be installed with the corresponding optional dependecies flag. The three defined for this package are
+
+- `orb_ml` - for FJK (machine learning from orbital information)
+
+- `msorf` - for MSORF (everything in `qml2.multilevel_sorf`)
+
+- `torch` - Torch functionality (efficiency questionable right now TBH)
+
+For example, to use the `orb_ml` and `msorf` optional dependecy flags in your installation use
 
    ```bash
-   pip install pyscf
+   pip install .[orb_ml,msorf]
+   ```
+or, if `makefile` is installed,
+
+   ```
+   make install OPT=[orb_ml,msorf]
    ```
 
 ## :clipboard: Testing

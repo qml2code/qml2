@@ -102,7 +102,7 @@ class OML_Compound(Compound):
         pyscf_calc_params=None,
         use_pyscf_localization=True,
         write_full_pyscf_chkfile=False,
-        solvent_eps=None,
+        smd_solvent=None,
         localization_procedure="IBO",
         use_gpu=False,
         temp_calc_dir=None,
@@ -138,7 +138,7 @@ class OML_Compound(Compound):
         self.use_Huckel = use_Huckel
         self.optimize_geometry = optimize_geometry
         self.use_pyscf_localization = use_pyscf_localization
-        self.solvent_eps = solvent_eps
+        self.smd_solvent = smd_solvent
         self.localization_procedure = localization_procedure
         # related to generating and using ao rescalings.
         self.optimize_ao_rescalings = optimize_ao_rescalings
@@ -190,7 +190,7 @@ class OML_Compound(Compound):
             "used_orb_type": self.used_orb_type,
             "use_Huckel": self.use_Huckel,
             "pyscf_calc_params": self.pyscf_calc_params,
-            "solvent_eps": self.solvent_eps,
+            "smd_solvent": self.smd_solvent,
             "localization_procedure": self.localization_procedure,
             "dft_xc": self.dft_xc,
             "dft_nlc": self.dft_nlc,
@@ -305,7 +305,7 @@ class OML_Compound(Compound):
         if self.calc_type in HF_methods:
             self.j_mat = self.adjust_spin_mat_dimen(mf.get_j(), already_spin_adj=True)
             self.k_mat = self.adjust_spin_mat_dimen(mf.get_k(), already_spin_adj=True)
-            if self.solvent_eps is None:
+            if self.smd_solvent is None:
                 fock_kwargs = {}
             else:
                 fock_kwargs = {"dm": mf.make_rdm1()}
@@ -492,11 +492,16 @@ class OML_Compound(Compound):
         mf.chkfile = self.pyscf_chkfile
         if (not self.use_Huckel) and ext_isfile(self.pyscf_chkfile):
             mf.init_guess = "chkfile"
-        if self.solvent_eps is not None:
-            from pyscf.solvent import DDCOSMO
+        if self.smd_solvent is not None:
+            if self.use_gpu:
+                from gpu4pyscf.solvent.smd import smd_for_scf as smd_for_scf_gpu
 
-            mf = DDCOSMO(mf)
-            mf.with_solvent.eps = self.solvent_eps
+                mf = smd_for_scf_gpu(mf)
+            else:
+                from pyscf.solvent.smd import smd_for_scf
+
+                mf = smd_for_scf(mf)
+            mf.with_solvent.solvent = self.smd_solvent
         # TODO why this does not work???
         if initial_guess_comp is None:
             dm_init_guess = None

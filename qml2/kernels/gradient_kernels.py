@@ -273,7 +273,7 @@ def construct_local_dn_oqml_kernel_asymmetric(
 ):
     kernel_func = construct_local_dn_oqml_kernel_function(base_kernel_function_wders)
 
-    @jit_
+    @jit_(numba_parallel=True)
     def local_dn_oqml_kernel(
         A_reps,
         B_reps,
@@ -323,7 +323,7 @@ def construct_local_dn_gp_kernel_asymmetric(
 ):
     gp_kernel_func = construct_local_dn_gp_kernel_function(base_kernel_function_w2ders)
 
-    @jit_
+    @jit_(numba_parallel=True)
     def local_dn_gp_kernel_asymmetric(
         A_reps,
         B_reps,
@@ -384,7 +384,7 @@ def construct_local_dn_gp_kernel_asymmetric(
     return local_dn_gp_kernel_asymmetric
 
 
-@jit_
+@jit_(numba_parallel=True)
 def symmetrize_local_dn_gp_kernel(gp_kernel, en_force_ranges):
     copied_gp_kernel = save_(gp_kernel)
     nmols_A = en_force_ranges.shape[0] - 1
@@ -404,7 +404,7 @@ def construct_local_dn_gp_kernel_symmetric(
 ):
     gp_kernel_func = construct_local_dn_gp_kernel_function(base_kernel_function_w2ders)
 
-    @jit_
+    @jit_(numba_parallel=True)
     def local_dn_gp_kernel_symmetric(
         A_reps, A_dreps, nA, A_ncharges, A_rel_neighbors, A_rel_nums, sigma, output_kernel
     ):

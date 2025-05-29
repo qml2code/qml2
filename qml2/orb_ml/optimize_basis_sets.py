@@ -7,6 +7,7 @@ import scipy.optimize as spo
 from pyscf import scf
 from pyscf.grad.rhf import make_rdm1e
 
+from ..basic_utils import display_scipy_convergence
 from ..finite_difference import grid_finite_difference_coefficients_1var
 from .aux_classes import OML_pyscf_calc_params, converged_mf
 
@@ -293,7 +294,7 @@ def optimize_molecule_basis_rescalings(
         ),
         method=method,
         jac=True,
-        options={"disp": True},
+        options={"disp": display_scipy_convergence},
         tol=tolerance,
     )
 

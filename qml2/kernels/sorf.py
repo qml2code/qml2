@@ -124,8 +124,8 @@ def fast_walsh_hadamard(
 
 
 @jit_
-def generate_sorf_stack_phases(
-    red_scaled_reps, temp_red_reps, sorf_diags, biases, norm_const
+def generate_sorf_stack_unbiased_phases(
+    red_scaled_reps, temp_red_reps, sorf_diags, norm_const
 ) -> None:
     Ntransforms = sorf_diags.shape[0]
     if red_scaled_reps.shape[0] == temp_red_reps[:].shape[0]:
@@ -139,6 +139,13 @@ def generate_sorf_stack_phases(
         fast_walsh_hadamard(temp_red_reps, norm_const)
     # appears from Eq. (20) in QML-Lightning arxiv.
     temp_red_reps /= norm_const
+
+
+@jit_
+def generate_sorf_stack_phases(
+    red_scaled_reps, temp_red_reps, sorf_diags, biases, norm_const
+) -> None:
+    generate_sorf_stack_unbiased_phases(red_scaled_reps, temp_red_reps, sorf_diags, norm_const)
     # add biases
     temp_red_reps += biases
 

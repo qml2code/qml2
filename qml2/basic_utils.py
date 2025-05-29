@@ -17,6 +17,10 @@ def now():
     return datetime.now()
 
 
+# TODO: implement proper verbose mode displaying messages both from scipy and the rest of the code.
+display_scipy_convergence = False  # True
+
+
 # For building many-parent classes.
 def filtering_kwargs(key_list, kwargs, choose_not_in_list=False):
     filtered_kwargs = {}
@@ -205,3 +209,29 @@ def mkdir(dir_name):
         os.mkdir(dir_name)
     except FileExistsError:
         pass
+
+
+# For going between nested dictionnary and classes (mainly appears in multilevel SORF routines)
+def recursive_class_dict(obj):
+    if not hasattr(obj, "__dict__"):
+        return obj
+    output = {}
+    for k, val in obj.__dict__.items():
+        output[k] = recursive_class_dict(val)
+    return output
+
+
+class ConvertedDict:
+    def __init__(self, d: dict | list):
+        for k, val in d.items():
+            if type(val) in [dict, list]:
+                added_val = convert_dict_list(val)
+            else:
+                added_val = val
+            setattr(self, k, added_val)
+
+
+def convert_dict_list(d: dict | list):
+    if isinstance(d, list):
+        return [convert_dict_list(el) for el in d]
+    return ConvertedDict(d)

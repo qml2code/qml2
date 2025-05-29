@@ -1,0 +1,205 @@
+#!/bin/bash
+
+# KK: I keep this script as a proper shell command and use "spython" instead of "python"
+# if I want to submit a script to SLURM but feel too lazy to extensively modify it.
+# It creates a folder for the data where it copies the python script,
+# then creates a BATCH script that runs the copied python script in a scratch
+# folder and copies the results into the data folder.
+# 1st argument - python script name.
+# 2nd argument - how the SLURM job is named.
+# Arguments starting from third (if present) - arguments for the python script.
+
+#TODO : K.Karan: I think GPU allocation is OK according to the manuals, but I never got it to work
+# on my workstation.
+
+function flag_val(){
+    echo $1 | cut -d'=' -f2-
+}
+
+NCPUs=$(cat /etc/slurm/slurm.conf | tr ' ' '\n' | awk 'BEGIN {FS="="} {if ($1=="CPUs") print $2}')
+NGPUs=0
+JOB_OMP_NUM_THREADS=$NCPUs
+nodelist=$(hostname)
+
+USE_CURRENT_DIR=0
+conda_env=$CONDA_DEFAULT_ENV
+PIPE_ARGS=0
+array=""
+
+while [[ "$1" == --* ]]
+do
+    case "$1" in
+        --CPUs=*)
+            NCPUs=$(flag_val $1);;
+        --GPUs=*)
+            NGPUs=$(flag_val $1);;
+        --use-current_dir)
+            USE_CURRENT_DIR=1;;
+        --conda_env=*)
+            conda_env=$(flag_val $1);;
+        --OMP_NUM_THREADS=*)
+            JOB_OMP_NUM_THREADS=$(flag_val $1);;
+        --pipe_args)
+            PIPE_ARGS=1;;
+        --req_files=*)
+            req_files=$(flag_val $1);;
+        --nodelist=*)
+            nodelist=$(flag_val $1);;
+        --array=*)
+            array=$(flag_val $1);;
+        --export_env_vars=*)
+            EXPORT_ENV_VARS=$(flag_val $1);;
+        --*)
+            echo "Unknown flag: $1"
+            exit
+    esac
+    shift
+done
+
+py_script=$1
+
+if [ "$py_script" == "" ]
+then
+	echo "Python script name should be the first argument."
+	exit
+fi
+
+if [ ! -f $py_script ]
+then
+    echo "Python script not found!"
+    exit
+fi
+
+if [ "$PIPE_ARGS" == "1" ]
+then
+    arg_command="cat"
+else
+    arg_command="echo $(echo ${@} | tr ' ' '\n' | awk '{if (n <1) {n++} else {printf(" \047%s\047", $1)}}')"
+fi
+
+eval "$arg_command" | while read args
+do
+
+job_name=$(echo "$args" | cut -d' ' -f1)
+
+if [ $(echo "$args" | awk '{print NF}') != 1 ]
+then
+    other_args=$(echo "$args" | tr ' ' '\n' | awk '{if (n==0) {n++} else {printf(" \047%s\047", $1)}}')
+fi
+
+if [ ! -z "$array" ]
+then
+    other_args="\$SLURM_ARRAY_TASK_ID $other_args"
+    array_arg="--array=$array"
+fi
+
+if [ "$job_name" == "" ]
+then
+	echo "Name of the job should be the second argument."
+	exit
+fi
+
+data_dir=$(pwd)/data_"$job_name"
+
+if [ -d "$data_dir" ]
+then
+	echo "Job has already been done."
+	exit
+fi
+mkdir "$data_dir"
+
+cp $py_script "$data_dir"
+
+script_path="$data_dir"/$(basename $py_script)
+
+MYDIR=$(pwd)
+
+cd "$data_dir"
+
+EXNAME=ex_"$job_name".sh
+
+if [ "$NGPUs" != "0" ]
+then
+    gpu_alloc="#SBATCH --gres=gpu:$NGPUs"$'\n'
+fi
+
+if [ -z "$array" ]
+then
+    jobid='%j'
+else
+    jobid='%A_%a'
+fi
+
+cat > $EXNAME << EOF
+#!/bin/bash
+#SBATCH -J $job_name
+#SBATCH -o $job_name.stdout_$jobid
+#SBATCH -e $job_name.stderr_$jobid
+#SBATCH --nodelist=$nodelist
+$gpu_alloc#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=$NCPUs
+
+source "$(grep __conda_setup ~/.bashrc | head -n1 | cut -d"'" -f2 | rev | cut -d"/" -f3- | rev)/etc/profile.d/conda.sh"
+conda activate $conda_env
+
+EOF
+
+for NTHREAD_VAR in "OMP_NUM_THREADS" "OPENBLAS_NUM_THREADS" "MKL_NUM_THREADS" "VECLIB_MAXIMUM_THREADS" "NUMEXPR_NUM_THREADS" "NUMBA_NUM_THREADS" "QML2_NUM_PROCS"
+do
+    echo "export $NTHREAD_VAR=$JOB_OMP_NUM_THREADS" >> $EXNAME
+done
+
+if [ ! -z "$EXPORT_ENV_VARS" ]
+then
+    for env_tuple in $(echo $EXPORT_ENV_VARS | tr "/" " ")
+    do
+        echo "export $env_tuple" >> $EXNAME
+    done
+fi
+
+cat >> $EXNAME << EOF
+
+USE_CURRENT_DIR=$USE_CURRENT_DIR
+
+if [ "\$USE_CURRENT_DIR" == "0" ] && [ ! -z "\$SCRATCH_DIR" ]
+then
+    cd \$SCRATCH_DIR
+    output_dir="."
+else
+    output_dir=$data_dir
+    cd $data_dir
+fi
+EOF
+
+
+if [ ! -z $req_files ]
+then
+    for req_file in $(echo ${req_files[@]} | tr ":" " ")
+    do
+        if [ "${req_file:0:1}" == "/" ]
+        then
+            full_req_file_path=$req_file
+        else
+            full_req_file_path=$MYDIR/$req_file
+        fi
+        echo "cp $full_req_file_path ." >> $EXNAME
+    done
+fi
+
+cat >> $EXNAME << EOF
+echo "Started: \$(date)" > \$output_dir/execution_time.txt
+python '$script_path' $other_args
+echo "Finished: \$(date)" >> \$output_dir/execution_time.txt
+if [ "\$USE_CURRENT_DIR" == "0" ] && [ ! -z "\$SCRATCH_DIR" ]
+then
+    cp -r * $data_dir
+fi
+EOF
+
+SLURM_ID=$(sbatch $array_arg $DEPSTRING $EXNAME | awk '{print $4}')
+
+DEPSTRING="--dependency=afterok:$SLURM_ID"
+
+cd ..
+
+done

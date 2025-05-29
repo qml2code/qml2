@@ -5,6 +5,7 @@ from .slatm import generate_slatm, get_slatm_mbtypes
 
 class RepresentationCalculator:
     def __call__(self, nuclear_charges, coordinates, **kwargs):
+        assert nuclear_charges.shape[0] == coordinates.shape[0]
         return self.calc_representation(nuclear_charges, coordinates, **kwargs)
 
 
