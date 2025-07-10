@@ -191,12 +191,48 @@ def random_array_from_rng_(size: DimsSequenceType_ = (1,), rng: OptionalGenerato
     return torch.rand(size, generator=rng)
 
 
+@jit_
+def random_from_rng_(rng: OptionalGenerator_ = None):
+    random_array_from_rng_(rng=rng)[0]
+
+
 randint_ = torch.randint
+
+
+@jit_
+def randint_array_from_rng_(
+    lbound: Union[dim0int_array_, int],
+    ubound: Union[dim0int_array_, int],
+    size: DimsSequenceType_ = (1,),
+    rng: OptionalGenerator_ = None,
+):
+    return torch.randint(lbound, ubound, size, generator=rng)
+
+
+@jit_
+def randint_from_rng_(
+    lbound: Union[dim0int_array_, int],
+    ubound: Union[dim0int_array_, int],
+    rng: OptionalGenerator_ = None,
+):
+    return randint_array_from_rng_(lbound, ubound, rng=rng)[0]
 
 
 @jit_
 def standard_normal_(size: DimsSequenceType_ = ()):
     return torch.normal(zeros_(size), ones_(size))
+
+
+@jit_
+def standard_normal_array_from_rng_(
+    size: DimsSequenceType_ = (1,), rng: OptionalGenerator_ = None
+):
+    return torch.normal(zeros_(size), ones_(size), generator=rng)
+
+
+@jit_
+def standard_normal_from_rng_(rng: OptionalGenerator_ = None):
+    return standard_normal_array_from_rng_(rng=rng)[0]
 
 
 seed_ = torch.manual_seed

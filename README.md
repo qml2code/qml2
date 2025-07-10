@@ -16,11 +16,13 @@ or, if `makefile` is installed,
    ```
 Some parts of the code depend on additional dependencies that can be installed with the corresponding optional dependecies flag. The three defined for this package are
 
-- `orb_ml` - for FJK (machine learning from orbital information)
+- `orb_ml` - for FJK (machine learning from orbital information).
 
-- `msorf` - for MSORF (everything in `qml2.multilevel_sorf`)
+- `msorf` - for MSORF (everything in `qml2.multilevel_sorf`).
 
-- `torch` - Torch functionality (efficiency questionable right now TBH)
+- `morfeus` - for applications dependend on `morfeus-ml` package (everything related to conformer ensemble generation).
+
+- `torch` - Torch functionality (efficiency questionable right now TBH).
 
 For example, to use the `orb_ml` and `msorf` optional dependecy flags in your installation use
 
@@ -41,6 +43,8 @@ To check that the installed repo works correctly run
    make test
    ```
 **NOTE:** The command assumes that `python` environmental variable points towards a valid executable. If you use an environment alias change definition of the `python` variable in the beginning of the Makefile.
+
+If you have trouble getting all tests to complete consult the `tests/qml2_test.yml` file describing the conda environment where all tests have been created and reproduced.
 
 ## :books: API documentation
 
@@ -63,6 +67,10 @@ This will create `manual.html` file that can be opened with an Internet browser.
 `NUMBA_NUM_THREADS` - since the code is written in Numba OpenMP parallelization is mostly controlled via this variable.
 
 `QML2_NUM_PROCS` - number of processes spawned by parts of the code parallelized via `python.multiprocessing` (training set representations in model-related classes, `pyscf` calculations made by `OML_Compound_list` attribute calls). For limiting number of OpenMP threads spawned in turn by these processes use suppress options (such as `KRRModel` class's `training_reps_suppress_openmp` option). Also see `parallelization.set_default_num_procs`.
+
+`QML2_NUM_PROCS` - number of processes spawned by parts of the code parallelized via `python.multiprocessing` (training set representations in model-related classes, `pyscf` calculations made by `OML_Compound_list` attribute calls). For limiting number of OpenMP threads spawned in turn by these processes use suppress options (such as `KRRModel` class's `training_reps_suppress_openmp` option). Also see `parallelization.set_default_num_procs`.
+
+`QML2_AVOID_NUMBA_NUMPY_PARALLELIZATION` - some Numba routines in the code call in parallel Numpy routines, which creates problems in some setups (e.g. when both Numba and Numpy try to parallelize over a large number of threads without taking each other into account). Setting this environmental variable to `1` disables Numba parallelization in such routines, leaving them to be parallelized exclusively with Numpy.
 
 ### Experimental
 

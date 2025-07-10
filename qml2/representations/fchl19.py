@@ -178,12 +178,11 @@ def generate_fchl19_no_gradients(
 
     sqrt2pi = sqrt_(2.0 * pi_)
 
+    two_body_size = nelements * nRs2
     rep_size = nelements * nRs2 + (nelements * (nelements + 1)) * nRs3 * nFourier
 
     three_body_weight = sqrt_(eta3 / pi_) * three_body_weight
 
-    nbasis2 = Rs2.shape[0]
-    nbasis3 = Rs3.shape[0]
     nabasis = Ts.shape[0]
 
     # Initialize representation array
@@ -215,10 +214,10 @@ def generate_fchl19_no_gradients(
         relevant_distance_nums,
         max_num_rel_distances,
     )
-    add_rep = zeros_((natoms, max_num_rel_distances, nbasis2))
+    add_rep = zeros_((natoms, max_num_rel_distances, nRs2))
     # Calculate two-body terms (i,j) and add them to pairs with j < i.
     for i in prange_(natoms):
-        radial = zeros_((nbasis2,))
+        radial = zeros_((nRs2,))
         for j_id in range(int(relevant_distance_nums[i])):
             j = relevant_distance_ids[i, j_id]
             if j < i:
@@ -227,12 +226,12 @@ def generate_fchl19_no_gradients(
             if rij > rcut:
                 continue
             get_2body_component(
-                rij, rdecay[i, j_id], eta2, two_body_decay, Rs2, sqrt2pi, nbasis2, radial
+                rij, rdecay[i, j_id], eta2, two_body_decay, Rs2, sqrt2pi, nRs2, radial
             )
             n = element_types[j]
 
-            start_index_n = n * nbasis2
-            rep[i, start_index_n : start_index_n + nbasis2] += radial
+            start_index_n = n * nRs2
+            rep[i, start_index_n : start_index_n + nRs2] += radial
             if j < natoms:
                 i_id = get_neighbor_id(j, i, relevant_distance_ids, relevant_distance_nums)
                 add_rep[j, i_id, :] = radial[:]
@@ -245,8 +244,8 @@ def generate_fchl19_no_gradients(
             if i >= natoms:
                 break
             m = element_types[i]
-            start_index_m = m * nbasis2
-            rep[j, start_index_m : start_index_m + nbasis2] += add_rep[j, i_id, :]
+            start_index_m = m * nRs2
+            rep[j, start_index_m : start_index_m + nRs2] += add_rep[j, i_id, :]
     # Add three-body terms.
     invcut = 1.0 / acut
     rdecay = decay(
@@ -282,7 +281,7 @@ def generate_fchl19_no_gradients(
                 )
                 p = min(n, m)
                 q = max(n, m)
-                start_add = nelements * nbasis2 + nbasis3 * nabasis * (
+                start_add = two_body_size + nRs3 * nabasis * (
                     -((p * (p + 1)) // 2) + q + nelements * p
                 )
 
@@ -297,7 +296,7 @@ def generate_fchl19_no_gradients(
                     three_body_weight,
                     zeta,
                     nabasis,
-                    nbasis3,
+                    nRs3,
                     Rs3,
                     start_add,
                     rep[i],
@@ -596,7 +595,8 @@ def generate_fchl_with_gradients(
     Ts = linspace_(0, pi_, 2 * nFourier)
     sqrt2pi = sqrt_(2.0 * pi_)
 
-    rep_size = nelements * nRs2 + (nelements * (nelements + 1)) * nRs3 * nFourier
+    two_body_size = nelements * nRs2
+    rep_size = two_body_size + (nelements * (nelements + 1)) * nRs3 * nFourier
 
     natoms = coordinates.shape[0]
     element_types = get_element_types(nuclear_charges, elements, natoms, nelements)
@@ -627,7 +627,6 @@ def generate_fchl_with_gradients(
 
     three_body_weight = sqrt_(eta3 / pi_) * three_body_weight
 
-    nbasis2 = len(Rs2)
     invcut = 1.0 / rcut
     rdecay = decay(
         distance_matrix,
@@ -638,12 +637,12 @@ def generate_fchl_with_gradients(
         max_num_rel_distances,
     )
 
-    radial = zeros_(nbasis2)
+    radial = zeros_(nRs2)
     log_Rs2 = log_(Rs2)
     rep = zeros_((natoms, rep_size))
     grad = zeros_((natoms, rep_size, max_num_rel_atoms, nCartDim))
-    add_rep = zeros_((natoms, max_num_rel_distances, nbasis2))
-    add_grad = zeros_((natoms, max_num_rel_distances, nbasis2, nCartDim))
+    add_rep = zeros_((natoms, max_num_rel_distances, nRs2))
+    add_grad = zeros_((natoms, max_num_rel_distances, nRs2, nCartDim))
 
     for i in prange_(natoms):
         relevant_distance_num = int(relevant_distance_nums[i])
@@ -662,13 +661,13 @@ def generate_fchl_with_gradients(
             )
 
             radial = get_radial(
-                rij, two_body_decay, sigma, rdecay[i, j_id], Rs2, mu, nbasis2, sqrt2pi
+                rij, two_body_decay, sigma, rdecay[i, j_id], Rs2, mu, nRs2, sqrt2pi
             )
 
             n = element_types[j]
-            start_index_n = int(n * nbasis2)
+            start_index_n = int(n * nRs2)
 
-            rep[i, start_index_n : start_index_n + nbasis2] += radial
+            rep[i, start_index_n : start_index_n + nRs2] += radial
             if j < natoms:
                 i_id = get_neighbor_id(j, i, relevant_distance_ids, relevant_distance_nums)
                 add_rep[j, i_id, :] = radial[:]
@@ -702,8 +701,8 @@ def generate_fchl_with_gradients(
                     radial_base,
                 )
 
-                grad[i, start_index_n : start_index_n + nbasis2, relevant_distance_num, k] += part
-                grad[i, start_index_n : start_index_n + nbasis2, j_id, k] -= part
+                grad[i, start_index_n : start_index_n + nRs2, relevant_distance_num, k] += part
+                grad[i, start_index_n : start_index_n + nRs2, j_id, k] -= part
 
                 if j < natoms:
                     add_grad[j, i_id, :, k] = part
@@ -720,16 +719,15 @@ def generate_fchl_with_gradients(
                 continue
             m = element_types[i]
 
-            start_index_m = int(m * nbasis2)
-            rep[j, start_index_m : start_index_m + nbasis2] += add_rep[j, i_id, :]
-            grad[j, start_index_m : start_index_m + nbasis2, relevant_distance_num, :] -= add_grad[
+            start_index_m = int(m * nRs2)
+            rep[j, start_index_m : start_index_m + nRs2] += add_rep[j, i_id, :]
+            grad[j, start_index_m : start_index_m + nRs2, relevant_distance_num, :] -= add_grad[
                 j, i_id, :, :
             ]
-            grad[j, start_index_m : start_index_m + nbasis2, i_id, :] += add_grad[j, i_id, :, :]
+            grad[j, start_index_m : start_index_m + nRs2, i_id, :] += add_grad[j, i_id, :, :]
 
     nbasis3 = Rs3.shape[0]
     nabasis = Ts.shape[0]
-    two_body_size = nelements * nbasis2
 
     invcut = 1.0 / acut
     rdecay = decay(

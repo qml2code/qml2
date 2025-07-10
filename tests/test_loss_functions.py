@@ -55,47 +55,72 @@ def generate_loss_func_wargs_error_vectors(seed):
         ("RescaledHuber", smooth_args),
         ("RescaledLogCosh", smooth_args),
         ("SelfConsistentHuber", self_consistent_args),
+        ("SelfConsistentHuberAnalytic", self_consistent_args),
         ("SelfConsistentLogCosh", self_consistent_args),
         ("SquaredSelfConsistentHuber", self_consistent_args),
+        ("SquaredSelfConsistentHuberAnalytic", self_consistent_args),
         ("SquaredSelfConsistentLogCosh", self_consistent_args),
     ]
     return loss_funcs_wargs, error_vectors
 
 
+equivalent_losses = {
+    "SquaredSelfConsistentHuberAnalytic": "SquaredSelfConsistentHuber",
+    "SelfConsistentHuberAnalytic": "SelfConsistentHuber",
+}
+
+
 def run_loss_functions_test(grad=False):
     loss_funcs_wargs, error_vectors = generate_loss_func_wargs_error_vectors(1)
-
+    all_passed = True
     val_checksums = {}
     grad_checksums = {}
     for loss_func_name, loss_func_args in loss_funcs_wargs:
         loss_func = loss_functions_dict[loss_func_name](*loss_func_args)
-        val_checksum_rng = str2rng(loss_func_name)
+        if loss_func_name in equivalent_losses:
+            true_loss_func_name = equivalent_losses[loss_func_name]
+        else:
+            true_loss_func_name = loss_func_name
+        val_checksum_rng = str2rng(true_loss_func_name)
         if grad:
             loss_func_vals, loss_func_grads = get_several_loss_func_vals(
                 loss_func, error_vectors, grad=grad
             )
-            grad_checksum_rng = str2rng(loss_func_name)
-            add_checksum_to_dict(
+            grad_checksum_rng = str2rng(true_loss_func_name)
+            all_passed = add_checksum_to_dict(
                 grad_checksums,
-                loss_func_name,
+                true_loss_func_name,
                 loss_func_grads,
                 grad_checksum_rng,
                 nstack_checksums=8,
                 stacks=4,
+                max_rel_difference=1.0e-9,
+                compared_name=loss_func_name,
+                starting_all_passed=all_passed,
             )
         else:
             loss_func_vals = get_several_loss_func_vals(loss_func, error_vectors)
-        add_checksum_to_dict(
+        all_passed = add_checksum_to_dict(
             val_checksums,
-            loss_func_name,
+            true_loss_func_name,
             loss_func_vals,
             val_checksum_rng,
             nstack_checksums=8,
             stacks=1,
+            max_rel_difference=1.0e-10,
+            compared_name=loss_func_name,
+            starting_all_passed=all_passed,
         )
-    compare_or_create(val_checksums, "loss_functions", max_rel_difference=1.0e-10)
+    compare_or_create(
+        val_checksums, "loss_functions", max_rel_difference=1.0e-10, starting_all_passed=all_passed
+    )
     if grad:
-        compare_or_create(grad_checksums, "loss_function_gradients", max_rel_difference=1.0e-9)
+        compare_or_create(
+            grad_checksums,
+            "loss_function_gradients",
+            max_rel_difference=1.0e-9,
+            starting_all_passed=all_passed,
+        )
 
 
 def test_loss_functions():
@@ -118,23 +143,32 @@ def test_loss_function_linear_error_minimization():
     tol = 1.0e-9
     minima_locations = empty_((nprobs, ndim))
     minima_checksums = {}
+    all_passed = True
     for loss_func_name, loss_func_args in loss_funcs_wargs:
-        minima_checksum_rng = str2rng(loss_func_name)
+        if loss_func_name in equivalent_losses:
+            true_loss_func_name = equivalent_losses[loss_func_name]
+        else:
+            true_loss_func_name = loss_func_name
+        minima_checksum_rng = str2rng(true_loss_func_name)
         loss_func = loss_functions_dict[loss_func_name](*loss_func_args)
         for prob_id, (A, b) in enumerate(zip(As, bs)):
             minima_locations[prob_id, :] = loss_func.find_minimum_linear_errors(A, b, tol=tol)
-        add_checksum_to_dict(
+        all_passed = add_checksum_to_dict(
             minima_checksums,
-            loss_func_name,
+            true_loss_func_name,
             minima_locations,
             minima_checksum_rng,
             nstack_checksums=4,
             stacks=4,
+            max_rel_difference=1.0e-9,
+            compared_name=loss_func_name,
+            starting_all_passed=all_passed,
         )
     compare_or_create(
         minima_checksums,
         "loss_function_linear_error_minimization",
         max_rel_difference=1.0e-9,
+        starting_all_passed=all_passed,
     )
 
 

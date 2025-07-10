@@ -8,7 +8,9 @@ from ..basic_utils import display_scipy_convergence
 from ..jit_interfaces import (
     LinAlgError_,
     abs_,
+    all_,
     any_,
+    dbool_,
     dot_,
     empty_,
     exp_,
@@ -16,7 +18,9 @@ from ..jit_interfaces import (
     isnan_,
     jit_,
     log_,
+    logical_not_,
     mean_,
+    ones_,
     prange_,
     sign_,
     sort_,
@@ -207,7 +211,7 @@ class SquaredLoss(ErrorLoss):
 
 # SC Huber.
 @jit_
-def self_consistent_huber_rough_search_results(err_vals, compromise_coefficient):
+def self_consistent_huber_sorted_search_results(err_vals, compromise_coefficient):
     sorted_abs_errs = sort_(abs_(err_vals))
     geq_sum_abs_err = sum_(sorted_abs_errs)
     lt_sum_err2 = 0.0
@@ -235,40 +239,109 @@ def self_consistent_huber_rough_search_results(err_vals, compromise_coefficient)
         lt_sum_err2 = new_lt_sum_err2
         geq_sum_abs_err = new_geq_sum_abs_err
 
-    determinant = sqrt_(
-        geq_sum_abs_err**2 + lt_sum_err2 * (geq_num + tot_num / compromise_coefficient)
-    )
+    any_geq = geq_num != 0
+    geq_ratio = geq_num / tot_num
+    geq_mean_abs_err = geq_sum_abs_err
+    if any_geq:
+        geq_mean_abs_err /= geq_num
 
-    return geq_sum_abs_err, geq_num, determinant
+    any_lt = geq_num != tot_num
+    lt_mean_err2 = lt_sum_err2
+    if any_lt:
+        lt_mean_err2 /= tot_num - geq_num
+
+    return geq_mean_abs_err, any_geq, lt_mean_err2, any_lt, geq_ratio
 
 
 @jit_
 def self_consistent_huber_from_precalc(
-    geq_sum_abs_err, determinant, compromise_coefficient, geq_num, tot_num
+    geq_mean_abs_err, any_geq, lt_mean_err2, any_lt, geq_ratio, compromise_coefficient
 ):
-    return (geq_sum_abs_err + determinant) / 2 / (tot_num + compromise_coefficient * geq_num)
+    if not any_geq:
+        return (
+            sqrt_(
+                lt_mean_err2
+                * (1 - geq_ratio)
+                / compromise_coefficient
+                / (1 + compromise_coefficient * geq_ratio)
+            )
+            / 2
+        )
+    if not any_lt:
+        return geq_mean_abs_err * geq_ratio / (1 + compromise_coefficient * geq_ratio)
+    determinant = sqrt_(
+        geq_mean_abs_err**2
+        + lt_mean_err2 * (1 + 1 / geq_ratio / compromise_coefficient) * (1 - geq_ratio) / geq_ratio
+    )
+    return (geq_mean_abs_err + determinant) / 2 / (1 / geq_ratio + compromise_coefficient)
 
 
 @jit_
-def self_consistent_huber(err_vals, compromise_coefficient):
-    geq_sum_abs_err, geq_num, determinant = self_consistent_huber_rough_search_results(
-        err_vals, compromise_coefficient
-    )
-    tot_num = err_vals.shape[0]
+def self_consistent_huber_analytic(err_vals, compromise_coefficient):
+    (
+        geq_mean_abs_err,
+        any_geq,
+        lt_mean_err2,
+        any_lt,
+        geq_ratio,
+    ) = self_consistent_huber_sorted_search_results(err_vals, compromise_coefficient)
     return self_consistent_huber_from_precalc(
-        geq_sum_abs_err, determinant, compromise_coefficient, geq_num, tot_num
+        geq_mean_abs_err, any_geq, lt_mean_err2, any_lt, geq_ratio, compromise_coefficient
     )
 
 
-class SelfConsistentHuber(SelfConsistentLoss):
+class SelfConsistentHuberAnalytic(SelfConsistentLoss):
     def init_calculator(self):
-        self.calculator = self_consistent_huber
+        self.calculator = self.get_val_calculator()
         self.der_calculator = rescaled_huber_ders
         self.calculator_args = (self.compromise_coefficient,)
+
+    def get_val_calculator(self):
+        return self_consistent_huber_analytic
 
     def get_der_calculator_args(self, val):
         delta_value = self.compromise_coefficient * val
         return (delta_value,)
+
+
+@jit_
+def self_consistent_huber(err_vals, compromise_coefficient):
+    abs_errs = abs_(err_vals)
+    previous_geq = ones_(abs_errs.shape, dtype=dbool_)
+    current_geq = zeros_(abs_errs.shape, dtype=dbool_)
+    # the first iteration can be calculated without sqrt
+    current_l = mean_(abs_(err_vals)) / (1 + compromise_coefficient)
+    # iterate until convergence w.r.t. geq values
+    while True:
+        current_divisor = 2 * compromise_coefficient * current_l
+        current_geq[:] = abs_errs >= current_divisor
+        any_geq = any_(current_geq)
+        any_lt = any_(logical_not_(current_geq))
+        geq_ratio = mean_(current_geq)
+        if any_geq:
+            geq_mean_abs_err = mean_(abs_errs[current_geq])
+        else:
+            geq_mean_abs_err = 0.0
+        if any_lt:
+            lt_mean_err2 = mean_(err_vals[logical_not_(current_geq)] ** 2)
+        else:
+            lt_mean_err2 = 0.0
+        current_l = self_consistent_huber_from_precalc(
+            geq_mean_abs_err, any_geq, lt_mean_err2, any_lt, geq_ratio, compromise_coefficient
+        )
+        if all_(current_geq == previous_geq):
+            return current_l
+        previous_geq[:] = current_geq[:]
+
+
+class SelfConsistentHuber(SelfConsistentHuberAnalytic):
+    def get_val_calculator(self):
+        return self_consistent_huber
+
+
+class SquaredSelfConsistentHuberAnalytic(SquaredLoss):
+    def __init__(self, compromise_coefficient):
+        super().__init__(SelfConsistentHuberAnalytic(compromise_coefficient))
 
 
 class SquaredSelfConsistentHuber(SquaredLoss):

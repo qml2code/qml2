@@ -8,6 +8,8 @@
 # 1st argument - python script name.
 # 2nd argument - how the SLURM job is named.
 # Arguments starting from third (if present) - arguments for the python script.
+# If SPYTHON_NO_SLURM is defined in shell as 1 "spython" launches the submitted script in simple shell. Introduced in order same bash scripts could be used to spam jobs on workstations that do not have SLURM.
+
 
 #TODO : K.Karan: I think GPU allocation is OK according to the manuals, but I never got it to work
 # on my workstation.
@@ -16,7 +18,19 @@ function flag_val(){
     echo $1 | cut -d'=' -f2-
 }
 
-NCPUs=$(cat /etc/slurm/slurm.conf | tr ' ' '\n' | awk 'BEGIN {FS="="} {if ($1=="CPUs") print $2}')
+slurmconf_file="/etc/slurm/slurm.conf"
+
+if [ -f "$slurmconf_file" ]
+then
+    NCPUs=$(cat $slurmconf_file | tr ' ' '\n' | awk 'BEGIN {FS="="} {if ($1=="CPUs") print $2}')
+else
+    echo "WARNING: SLURM configuration file not found."
+    NCPUs=$OMP_NUM_THREADS
+    if [ "$NCPUs" == "" ]
+    then
+        NCPUs=1
+    fi
+fi
 NGPUs=0
 JOB_OMP_NUM_THREADS=$NCPUs
 nodelist=$(hostname)
@@ -25,6 +39,11 @@ USE_CURRENT_DIR=0
 conda_env=$CONDA_DEFAULT_ENV
 PIPE_ARGS=0
 array=""
+
+if [ "$SPYTHON_NO_SLURM" == "" ]
+then
+    SPYTHON_NO_SLURM=0
+fi
 
 while [[ "$1" == --* ]]
 do
@@ -196,9 +215,14 @@ then
 fi
 EOF
 
-SLURM_ID=$(sbatch $array_arg $DEPSTRING $EXNAME | awk '{print $4}')
-
-DEPSTRING="--dependency=afterok:$SLURM_ID"
+if [ "$SPYTHON_NO_SLURM" == "0" ]
+then
+    SLURM_ID=$(sbatch $array_arg $DEPSTRING $EXNAME | awk '{print $4}')
+    DEPSTRING="--dependency=afterok:$SLURM_ID"
+else
+    chmod +x $EXNAME
+    ./$EXNAME > $job_name.stdout_0 2> $job_name.stderr_0
+fi
 
 cd ..
 

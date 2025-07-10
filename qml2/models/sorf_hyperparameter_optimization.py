@@ -4,6 +4,7 @@ from ..dimensionality_reduction import get_reductors_diff_species
 from ..jit_interfaces import (
     LinAlgError_,
     abs_,
+    allow_numba_numpy_parallelization,
     array_,
     concatenate_,
     copy_,
@@ -278,7 +279,7 @@ def mult_by_importance(arr, importance_multipliers=None):
     return out
 
 
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=allow_numba_numpy_parallelization())
 def get_stat_factors(Z_U, eigenvalue_multipliers):
     nmols = Z_U.shape[0]
     output = empty_((nmols,))
@@ -460,7 +461,7 @@ def leaveoneout_loss_der_wrt_single_feature(
         )
 
 
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=allow_numba_numpy_parallelization())
 def leaveoneout_loss_der_wrt_features(
     Z_matrix_derivatives,
     Z_U,

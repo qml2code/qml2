@@ -1,41 +1,63 @@
 [build-system]
-requires = ["setuptools >= 61.0"]
 build-backend = "setuptools.build_meta"
+requires = [
+    "setuptools >= 61.0",
+]
+
 [project]
+authors = [
+    { name = "Danish Khan" },
+    { name = "Jan Weinreich" },
+    { name = "Konstantin Karandashev" },
+    { name = "Stefan Heinen" },
+]
+dependencies = [
+    "numba",
+    "numpy",
+    "scipy",
+]
+description = "Collection of Quantum Machine Learning routines"
 name = "qml2"
-version = "0.1.5"
-dependencies=[
-  "numpy",
-  "numba",
-  "scipy",
-]
-authors=[
- {name="Konstantin Karandashev"},
- {name="Stefan Heinen"},
- {name="Danish Khan"},
- {name="Jan Weinreich"},
-]
-description="Collection of Quantum Machine Learning routines"
-readme="README.md"
-license={text="MIT License"}
-[tool.setuptools]
-packages=[
-  "qml2",
-  "qml2.orb_ml",
-  "qml2.representations",
-  "qml2.models",
-  "qml2.jit_interfaces",
-  "qml2.dataset_formats",
-  "qml2.kernels",
-  "qml2.test_utils",
-  "qml2.gpytorch",
-  "qml2.cupy",
-  "qml2.multilevel_sorf",
-  "qml2.multilevel_sorf.processed_object_constructors",
-  "qml2.multilevel_sorf.base_constructors"]
+readme = "README.md"
+version = "0.1.6"
+
+[project.license]
+text = "MIT License"
+
 [project.optional-dependencies]
-torch=["torch"]
-orb_ml=["pyscf", "geometric"]
-msorf=["aalto-boss"]
+morfeus = [
+    "morfeus-ml",
+    "rdkit",
+]
+msorf = [
+    "aalto-boss",
+]
+orb_ml = [
+    "geometric",
+    "pyscf",
+]
+torch = [
+    "torch",
+]
+
+[tool.setuptools]
+packages = [
+    "qml2",
+    "qml2.cupy",
+    "qml2.dataset_formats",
+    "qml2.gpytorch",
+    "qml2.jit_interfaces",
+    "qml2.kernels",
+    "qml2.models",
+    "qml2.multilevel_sorf",
+    "qml2.multilevel_sorf.base_constructors",
+    "qml2.multilevel_sorf.processed_object_constructors",
+    "qml2.orb_ml",
+    "qml2.representations",
+    "qml2.test_utils",
+]
+
 [tool.setuptools.package-data]
-qml2 = ["*/*.cu"]
+qml2 = [
+    "*/*.cu",
+]

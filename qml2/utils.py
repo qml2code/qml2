@@ -29,6 +29,7 @@ from .jit_interfaces import (
     max_,
     min_,
     ndarray_,
+    optional_ndarray_,
     prange_,
     searchsorted_,
     sort_,
@@ -211,12 +212,12 @@ def serial_dot_2D_1D(arr_2D, arr_1D, out):
 
 # for rounding up to powers of 2 (for SORF)
 @jit_
-def is_power2(n):
+def is_power2(n: int):
     return n & (n - 1) == 0
 
 
 @jit_
-def roundup_power2(n):
+def roundup_power2(n: int):
     if is_power2(n):
         return n
     output = 1
@@ -395,7 +396,7 @@ class weighted_array(list):
 
 # For equally distributing load among Numba threads.
 @jit_
-def check_num_threads(nprocs):
+def check_num_threads(nprocs: Union[int, None]):
     if nprocs is None:
         return get_num_threads_()
     else:
@@ -403,7 +404,7 @@ def check_num_threads(nprocs):
 
 
 @jit_
-def get_thread_assignments(load_arr, nprocs=None):
+def get_thread_assignments(load_arr, nprocs: Union[int, None] = None, dint_: dtype_ = dint_):
     """
     Take the relative CPU times of different jobs provided in load_arr and distribute them to different processes according to
     longest-processing-time-first algorithm.
@@ -426,7 +427,7 @@ def get_thread_assignments(load_arr, nprocs=None):
 
 
 @jit_
-def get_assigned_jobs(process_id, njobs, thread_assignments=None):
+def get_assigned_jobs(process_id: int, njobs: int, thread_assignments: optional_ndarray_ = None):
     nprocesses = get_num_threads_()
     if thread_assignments is None:
         process_load = njobs // nprocesses

@@ -12,10 +12,11 @@
 # then it enters under the name given to it by Numpy/Numba.
 import importlib
 
-from ..basic_utils import checked_environ_val
+from ..basic_utils import checked_environ_val, checked_logical_environ_val
 from .jit_manager import available_jits, numba_flag
 
 default_jit_env_var_name = "QML2_DEFAULT_JIT"
+avoid_numba_numpy_parallellization_env_var_name = "QML2_AVOID_NUMBA_NUMPY_PARALLELIZATION"
 
 
 def set_defaults_from_interface(interface_name):
@@ -34,6 +35,15 @@ def set_default_jit(new_jit_flag):
     global used_jit_name
     used_jit_name = new_jit_flag
     set_defaults_from_interface("." + used_jit_name + "_interface")
+
+
+def allow_numba_numpy_parallelization():
+    """
+    This function is used as the `numba_parallel` value in `jit_` instances for routines where `prange` loop includes references to Numpy.
+    """
+    return not checked_logical_environ_val(
+        avoid_numba_numpy_parallellization_env_var_name, default_answer=False
+    )
 
 
 if __name__ != "__main__":

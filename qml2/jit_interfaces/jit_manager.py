@@ -1,5 +1,6 @@
 # Introduced to ensure flags for different JIT compilers do not obstruct each other.
 import inspect
+import traceback
 
 from ..basic_utils import checked_logical_environ_val
 
@@ -46,7 +47,7 @@ class JITFailureException(Exception):
 
 
 class ExceptionRaisingFunc:
-    def __init__(self, func):
+    def __init__(self, func, ex):
         self.exception_text = (
             """
 Failure in JIT compilation.
@@ -56,6 +57,10 @@ source origin:"""
 function source:
 """
             + inspect.getsource(func)
+            + """
+traceback:
+"""
+            + "\n".join(traceback.format_exception(ex))
         )
 
     def __call__(self, *args, **kwargs):
@@ -96,10 +101,10 @@ class defined_jit_:
             return signature_or_function
         try:
             return self.used_jit_func(signature_or_function, **kwargs)
-        except (*self.possible_jit_failures,):
+        except (*self.possible_jit_failures,) as ex:
             #            assert type(ex) in self.possible_jit_failures
             if skip_jit_failures:
-                return ExceptionRaisingFunc(signature_or_function)
+                return ExceptionRaisingFunc(signature_or_function, ex)
             else:
                 raise JITFailureException
 

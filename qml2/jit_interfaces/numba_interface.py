@@ -125,8 +125,43 @@ def random_array_from_rng_(size=(1,), rng=None):
         return rng.random(size)
 
 
+@jit_
+def random_from_rng_(rng=None):
+    return random_array_from_rng_(rng=rng)[0]
+
+
 standard_normal_ = np.random.standard_normal
+
+
+@jit_
+def standard_normal_array_from_rng_(size=(1,), rng=None):
+    if rng is None:
+        return standard_normal_(size)
+    else:
+        return rng.standard_normal(size)
+
+
+@jit_
+def standard_normal_from_rng_(rng=None):
+    return standard_normal_array_from_rng_(rng=rng)[0]
+
+
 randint_ = np.random.randint
+
+
+@jit_
+def randint_array_from_rng_(lbound, ubound, size=(1,), rng=None):
+    if rng is None:
+        return randint_(lbound, ubound, size=size)
+    else:
+        return rng.integers(lbound, ubound, size=size)
+
+
+@jit_
+def randint_from_rng_(lbound, ubound, rng=None):
+    return randint_array_from_rng_(lbound, ubound, rng=rng)[0]
+
+
 seed_ = np.random.seed
 permutation_ = np.random.permutation
 # copying

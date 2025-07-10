@@ -245,10 +245,128 @@ def max_rel_diff(arr1, arr2):
     return np.max(np.abs((arr1 - arr2) / (arr1 + arr2) * 2.0))
 
 
-def add_checksum_to_dict(checksum_dict, arr_name, arr, rng, nstack_checksums=1, stacks=1):
+def checksum_repetition(checksum_dict, added_name):
+    assert added_name not in checksum_dict, f"repeating checksum dictionnary entry: {added_name}"
+
+
+def checksum_present(checksum_dict, checksum_name):
+    assert checksum_name in checksum_dict, f"checksum entry missing: {checksum_name}"
+
+
+def add_reshaped_to_dict(checksum_dict, arr_name, arr):
+    checksum_repetition(checksum_dict, arr_name)
+    checksum_dict[arr_name] = array_(arr).reshape(-1)
+
+
+def print_wextra_string(*args, extra_print_str=None):
+    print_args = args
+    if extra_print_str is not None:
+        print_args = (*print_args, "(" + extra_print_str + ")")
+    print(*print_args)
+
+
+def comparison_sanity_check(
+    arr1,
+    arr2,
+    name,
+    max_difference=None,
+    max_rel_difference=1.0e-10,
+    extra_print_string=None,
+    starting_all_passed=None,
+):
+    if max_difference is None:
+        assert max_rel_difference is not None
+        diff_measure = max_rel_diff(arr1, arr2)
+        diff_bound = max_rel_difference
+    else:
+        diff_measure = max_diff(arr1, arr2)
+        diff_bound = max_difference
+    passed = diff_measure < diff_bound
+    if passed:
+        print_wextra_string(
+            "PASSED", name, "DIFF:", diff_measure, extra_print_str=extra_print_string
+        )
+    else:
+        print_wextra_string(
+            "FAILED",
+            name,
+            "DIFF:",
+            diff_measure,
+            ">",
+            diff_bound,
+            extra_print_str=extra_print_string,
+        )
+    if starting_all_passed is not None:
+        passed = passed and starting_all_passed
+    return passed
+
+
+def single_checksum_comparison(
+    checksum_dict,
+    arr_name,
+    arr,
+    rng=None,
+    nstack_checksums=1,
+    stacks=1,
+    max_difference=None,
+    max_rel_difference=1.0e-10,
+    extra_print_string=None,
+    compared_name=None,
+    starting_all_passed=None,
+):
+    checksum_present(checksum_dict, arr_name)
+    if rng is None:
+        rng = str2rng(arr_name)
+    new_checksum = create_checksums(arr, rng, nstack_checksums=nstack_checksums, stacks=stacks)
+
+    if compared_name is not None:
+        if extra_print_string is None:
+            extra_print_string = compared_name
+        else:
+            extra_print_string = extra_print_string + f":{compared_name}"
+
+    return comparison_sanity_check(
+        new_checksum,
+        checksum_dict[arr_name],
+        arr_name,
+        max_difference=max_difference,
+        max_rel_difference=max_rel_difference,
+        extra_print_string=extra_print_string,
+        starting_all_passed=starting_all_passed,
+    )
+
+
+def add_checksum_to_dict(
+    checksum_dict,
+    arr_name,
+    arr,
+    rng=None,
+    nstack_checksums=1,
+    stacks=1,
+    starting_all_passed=None,
+    compared_name=None,
+    extra_print_string=None,
+    **kwargs,
+):
+    if arr_name in checksum_dict:
+        assert compared_name is not None
+        return single_checksum_comparison(
+            checksum_dict,
+            arr_name,
+            arr,
+            rng=rng,
+            nstack_checksums=nstack_checksums,
+            stacks=stacks,
+            starting_all_passed=starting_all_passed,
+            compared_name=compared_name,
+            **kwargs,
+        )
+    if rng is None:
+        rng = str2rng(arr_name)
     checksum_dict[arr_name] = create_checksums(
         arr, rng, nstack_checksums=nstack_checksums, stacks=stacks
     )
+    return starting_all_passed
 
 
 def compare_or_create(
@@ -258,6 +376,8 @@ def compare_or_create(
     max_rel_difference=1.0e-10,
     jit_dependent=False,
     partial_comparison=False,
+    extra_print_string=None,
+    starting_all_passed=None,
 ):
     # Methods that implicitly depend on whether Numpy or Torch random number generator is used
     # have different files for different jit versions.
@@ -283,23 +403,28 @@ def compare_or_create(
             "WARNING: a benchmark was absent but was created: " + exception_str_bench_name
         )
 
-    all_passed = True
+    if not partial_comparison:
+        assert sorted(checksums_dict.keys()) == sorted(
+            benchmark_checksums.keys()
+        ), "Checksum entries do not match."
+
+    if starting_all_passed is None:
+        all_passed = True
+    else:
+        all_passed = starting_all_passed
+
     for name, checksums in checksums_dict.items():
-        assert name in benchmark_checksums
+        checksum_present(benchmark_checksums, name)
         bench_cs = benchmark_checksums[name]
-        if max_difference is None:
-            assert max_rel_difference is not None
-            diff_measure = max_rel_diff(checksums, bench_cs)
-            diff_bound = max_rel_difference
-        else:
-            diff_measure = max_diff(checksums, bench_cs)
-            diff_bound = max_difference
-        passed = diff_measure < diff_bound
-        if passed:
-            print("PASSED", name, "DIFF:", diff_measure)
-        else:
-            print("FAILED", name, "DIFF:", diff_measure, ">", diff_bound)
-            all_passed = False
+        passed = comparison_sanity_check(
+            checksums,
+            bench_cs,
+            name,
+            max_difference=max_difference,
+            max_rel_difference=max_rel_difference,
+            extra_print_string=extra_print_string,
+        )
+        all_passed = all_passed and passed
     assert all_passed
 
 
@@ -318,3 +443,22 @@ def nullify_uninitialized_grad(grad_representation, relevant_atom_ids, relevant_
         relevant_atom_num = relevant_atom_nums[i]
         grad_representation[i, :, relevant_atom_num:, :] = 0.0
         relevant_atom_ids[i, relevant_atom_num:] = 0
+
+
+def kwargs_to_oneliner(d: dict):
+    return ", ".join([k + ":" + str(val) for k, val in d.items()])
+
+
+# for importing QM7 SMILES
+def get_QM7_SMILES():
+    imported_file = test_data_dir + "/QM7_SMILES.txt"
+    all_SMILES = [s.strip() for s in open(imported_file, "r").readlines()]
+    return all_SMILES
+
+
+def get_shuffled_QM7_SMILES(rng=None):
+    if rng is None:
+        rng = str2rng("QM7_SMILES")
+    all_SMILES = get_QM7_SMILES()
+    rng.shuffle(all_SMILES)
+    return all_SMILES

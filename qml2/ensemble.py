@@ -3,6 +3,7 @@ import itertools
 import os
 from copy import deepcopy
 
+# TODO make morfeus and rdkit dependences here optional to allow running some MSORF tests without morfeus-ml
 from morfeus.conformer import ConformerEnsemble
 from rdkit import Chem, RDLogger
 
@@ -14,6 +15,7 @@ from .orb_ml.oml_compound import OML_Compound, OML_Slater_pair, OML_Slater_pairs
 from .orb_ml.representations import OML_rep_params
 from .utils import weighted_array, write_compound_to_xyz_file
 
+# disable RdKit's verbose mode.
 RDLogger.DisableLog("rdApp.*")
 
 base_compound_class_dict = {
@@ -22,6 +24,26 @@ base_compound_class_dict = {
     "OML_Slater_pair": OML_Slater_pair,
     "OML_Slater_pairs": OML_Slater_pairs,
 }
+
+morfeus_random_seed = None
+
+
+def set_morfeus_random_seed(new_morfeus_random_seed):
+    """
+    Set RNG seed used by morfeus when generating conformers for the Ensemble class.
+    """
+    global morfeus_random_seed
+    morfeus_random_seed = new_morfeus_random_seed
+
+
+def get_morfeus_random_seed(default_seed=None):
+    """
+    Get RNG seed used by morfeus when generating conformers for the Ensemble class.
+    """
+    if default_seed is None:
+        return morfeus_random_seed
+    else:
+        return default_seed
 
 
 class WeightedCompound:
@@ -53,6 +75,7 @@ class Ensemble:
         num_conformer_generations=1,
         savefile_prefix=None,
         compound_kwargs={},
+        random_seed=None,
     ):
         self.rdkit_obj = rdkit_obj
         self.SMILES = SMILES
@@ -70,6 +93,7 @@ class Ensemble:
         self.filtered_conformers = None
         self.processed_conformers = None
         self.savefile_prefix = savefile_prefix
+        self.random_seed = random_seed
 
     def get_nuclear_charges(self):
         return array_([a.GetAtomicNum() for a in self.rdkit_obj.GetAtoms()])
@@ -113,6 +137,7 @@ class Ensemble:
                 n_confs=self.num_conformers,
                 optimize=self.ff_type,
                 n_threads=checked_environ_val("MORFEUS_NUM_THREADS", default_answer=1),
+                random_seed=get_morfeus_random_seed(default_seed=self.random_seed),
             )
         except Exception as ex:
             if not isinstance(ex, ValueError):
