@@ -1,4 +1,6 @@
-# For dealing with several Cholesky decompositions at once.
+"""
+Everything related to getting KRR coefficients with different regressors.
+"""
 import numpy as np
 import scipy
 
@@ -113,12 +115,26 @@ def lstsq_solve(A, B, rcond=None):
     return lstsq_(A, B, rcond=rcond)[0]
 
 
-def svd_aligned(A):
+def svd_aligned(A, overwrite_a=False):
     """
     Shorthand for C-contiguous output of scipy.linalg.svd(A, full_matrices=False).
     """
-    U, s, Vh = scipy.linalg.svd(A, full_matrices=False)
+    U, s, Vh = scipy.linalg.svd(A, full_matrices=False, overwrite_a=overwrite_a)
     return np.ascontiguousarray(U), s, np.ascontiguousarray(Vh)
+
+
+def regression_using_Z_SVD(
+    Z_matrix, l2reg, quantities, Z_U=None, Z_singular_values=None, Z_Vh=None
+):
+    """
+    Regression for SORF using SVD decomposition of the feature vector matrix.
+    """
+    if Z_U is None:
+        assert Z_matrix is not None
+        Z_U, Z_singular_values, Z_Vh = svd_aligned(Z_matrix)
+    transformed_alphas_rhs = dot_(Z_U.T, quantities)
+    transformed_alphas_rhs *= Z_singular_values / (Z_singular_values**2 + l2reg)
+    return dot_(Z_Vh.T, transformed_alphas_rhs)
 
 
 # KK: Accelerates training if you train on several properties that can be sorted in such a way that each property is available for each molecule for which the
@@ -132,6 +148,9 @@ def nullify_ignored(arr, indices_to_ignore):
 
 class Cho_multi_factors:
     def __init__(self, train_kernel, indices_to_ignore=None, ignored_orderable=False):
+        """
+        For dealing with several Cholesky decompositions at once.
+        """
         self.indices_to_ignore = indices_to_ignore
         self.ignored_orderable = ignored_orderable
         self.single_cho_decomp = indices_to_ignore is None

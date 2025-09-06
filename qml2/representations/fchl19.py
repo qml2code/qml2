@@ -2,6 +2,7 @@
 from ..data import nCartDim
 from ..jit_interfaces import (
     abs_,
+    any_,
     arccos_,
     array_,
     cos_,
@@ -138,13 +139,17 @@ def get_3body_component(
 def get_element_types(
     nuclear_charges, elements, natoms: int, nelements: int, dint_: dtype_ = dint_
 ):
-    element_types = zeros_(natoms, dtype=dint_)
+    element_types = empty_(natoms, dtype=dint_)
+    element_types[:] = -1
 
     for i in prange_(natoms):
         for j in range(nelements):
             if nuclear_charges[i] == elements[j]:
                 element_types[i] = j
                 break
+
+    if any_(element_types == -1):
+        raise Exception("Not all nuclear charges found in 'elements' keyword argument!")
 
     return element_types
 

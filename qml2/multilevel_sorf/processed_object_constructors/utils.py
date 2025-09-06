@@ -2,9 +2,8 @@
 Routines for convenient post-processing of some custom data formats.
 """
 from ...jit_interfaces import dint_, dot_, empty_, jit_, prange_, sqrt_
-from ...utils import l2_sq_norm
+from ...utils import get_numba_list, l2_sq_norm
 from ..base_constructors import get_datatype
-from ..utils import get_numba_list
 
 
 @jit_

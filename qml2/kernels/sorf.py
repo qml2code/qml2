@@ -3,6 +3,7 @@
 # Decided against that in case we start playing with SORF values beyond -1 and +1.
 from typing import Tuple, Union
 
+from ..basic_utils import checked_logical_environ_val
 from ..dimensionality_reduction import (
     project_scale_local_representations,
     project_scale_representations,
@@ -27,6 +28,17 @@ from ..jit_interfaces import (
     sqrt_,
 )
 from ..utils import check_allocation, get_atom_environment_ranges, get_element_ids_from_sorted
+
+avoid_sorf_numba_parallelization_env_var_name = "QML2_AVOID_SORF_NUMBA_PARALLELIZATION"
+
+
+def allow_sorf_numba_parallelization():
+    """
+    This function is used as the `numba_parallel` value in `jit_` instances for routines where `prange` loops over feature vectors whose evaluation potentially includes calculating dot product with a reductor matrix.
+    """
+    return not checked_logical_environ_val(
+        avoid_sorf_numba_parallelization_env_var_name, default_answer=False
+    )
 
 
 # For creating SORF.
@@ -181,7 +193,7 @@ def local_sorf_func(
         )
 
 
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=allow_sorf_numba_parallelization())
 def generate_sorf_processed_input(
     reduced_scaled_representations,
     sorf_diags,
@@ -211,7 +223,7 @@ def generate_sorf_processed_input(
     kernel[:, :] *= rff_vec_norm_const(nfeatures)  # normalization
 
 
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=allow_sorf_numba_parallelization())
 def generate_local_sorf_processed_input(
     reduced_scaled_representations,
     element_ids,
@@ -223,9 +235,10 @@ def generate_local_sorf_processed_input(
     init_size: int,
 ) -> None:
     assert reduced_scaled_representations.shape[0] == element_ids.shape[0]
-    assert all_sorf_diags.shape[0] == all_biases.shape[0]
+    assert all_sorf_diags.shape[:2] == all_biases.shape[:2]
+    assert ubound_arr[-1] == reduced_scaled_representations.shape[0]
     # KK: not %100 sure it's necessary
-    assert max_(element_ids) <= all_sorf_diags.shape[0]
+    assert max_(element_ids) < all_sorf_diags.shape[1]
 
     norm_const = hadamard_norm_const(init_size)
 

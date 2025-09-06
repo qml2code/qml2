@@ -1,63 +1,67 @@
 [build-system]
 build-backend = "setuptools.build_meta"
 requires = [
-    "setuptools >= 61.0",
+  "setuptools>=61",
 ]
 
 [project]
+name = "qml2"
+version = "0.1.7"
+description = "Collection of Quantum Machine Learning routines"
+readme = "README.md"
+license.text = "MIT License"
 authors = [
-    { name = "Danish Khan" },
-    { name = "Jan Weinreich" },
-    { name = "Konstantin Karandashev" },
-    { name = "Stefan Heinen" },
+  { name = "Konstantin Karandashev" },
+  { name = "Stefan Heinen" },
+  { name = "Danish Khan" },
+  { name = "Jan Weinreich" },
+]
+# qml2 uses some Python 3.12 syntax
+requires-python = ">=3.12"
+
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "numba",
-    "numpy",
-    "scipy",
+  "numba",
+  "numpy",
+  "scipy",
 ]
-description = "Collection of Quantum Machine Learning routines"
-name = "qml2"
-readme = "README.md"
-version = "0.1.6"
-
-[project.license]
-text = "MIT License"
-
-[project.optional-dependencies]
-morfeus = [
-    "morfeus-ml",
-    "rdkit",
+optional-dependencies.models = [
+  "aalto-boss",
 ]
-msorf = [
-    "aalto-boss",
+optional-dependencies.morfeus = [
+  "morfeus-ml",
+  "rdkit",
 ]
-orb_ml = [
-    "geometric",
-    "pyscf",
+optional-dependencies.orb_ml = [
+  "geometric",
+  "pyscf",
 ]
-torch = [
-    "torch",
+optional-dependencies.torch = [
+  "torch",
 ]
 
 [tool.setuptools]
 packages = [
-    "qml2",
-    "qml2.cupy",
-    "qml2.dataset_formats",
-    "qml2.gpytorch",
-    "qml2.jit_interfaces",
-    "qml2.kernels",
-    "qml2.models",
-    "qml2.multilevel_sorf",
-    "qml2.multilevel_sorf.base_constructors",
-    "qml2.multilevel_sorf.processed_object_constructors",
-    "qml2.orb_ml",
-    "qml2.representations",
-    "qml2.test_utils",
+  "qml2",
+  "qml2.cupy",
+  "qml2.dataset_formats",
+  "qml2.gpytorch",
+  "qml2.jit_interfaces",
+  "qml2.kernels",
+  "qml2.models",
+  "qml2.multilevel_sorf",
+  "qml2.multilevel_sorf.base_constructors",
+  "qml2.multilevel_sorf.processed_object_constructors",
+  "qml2.orb_ml",
+  "qml2.representations",
+  "qml2.test_utils",
 ]
 
 [tool.setuptools.package-data]
 qml2 = [
-    "*/*.cu",
+  "*/*.cu",
 ]

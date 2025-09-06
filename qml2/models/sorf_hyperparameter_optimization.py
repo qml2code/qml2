@@ -1,5 +1,4 @@
 from ..basic_utils import now
-from ..data import nCartDim
 from ..dimensionality_reduction import get_reductors_diff_species
 from ..jit_interfaces import (
     LinAlgError_,
@@ -20,13 +19,19 @@ from ..jit_interfaces import (
     prange_,
     zeros_,
 )
+from ..kernels.gradient_common import atom_force_dim
 from ..kernels.gradient_kernels import prediction_vector_length
 from ..kernels.gradient_sorf import generate_local_force_sorf
 from ..kernels.sorf import create_sorf_matrices_diff_species, generate_local_sorf
 from ..math import cho_solve, svd_aligned
 from ..utils import get_sorted_elements, multiply_transposed
 from .forces_utils import combine_energy_forces_rhs, get_importance_multipliers
-from .hyperparameter_optimization import KFoldsMultipleObservables, callable_ninv_MAE_local_dn
+from .hyperparameter_optimization import (
+    KFoldsMultipleObservables,
+    KRRLeaveOneOutL2regLoss,
+    KRRLeaveOneOutL2regOpt,
+    callable_ninv_MAE_local_dn,
+)
 from .loss_functions import MAE
 
 
@@ -189,7 +194,7 @@ class callable_ninv_MAE_local_dn_forces_SORF(callable_ninv_MAE_local_dn_SORF):
         )
 
     def init_num_en_force_observables(self, training_forces_list):
-        self.num_observables = len(training_forces_list) + nCartDim * sum(
+        self.num_observables = len(training_forces_list) + atom_force_dim * sum(
             [force.shape[0] for force in training_forces_list]
         )
 
@@ -246,7 +251,7 @@ class callable_ninv_MAE_local_dn_forces_SORF(callable_ninv_MAE_local_dn_SORF):
         self.training_relevant_atom_nums = concatenate_(training_relevant_atom_nums_list)
         self.max_relevant_atom_num = max_(self.training_relevant_atom_nums)
         self.training_grad_representations = empty_(
-            (*self.training_representations.shape, self.max_relevant_atom_num, nCartDim)
+            (*self.training_representations.shape, self.max_relevant_atom_num, atom_force_dim)
         )
         self.training_relevant_atom_ids = empty_(
             (self.training_representations.shape[0], self.max_relevant_atom_num), dtype=dint_
@@ -600,3 +605,57 @@ def leaveoneout_error_loss(
     if return_errors:
         return loss, loss_ders, loo_errors
     return loss, loss_ders
+
+
+class SORFLeaveOneOutL2regLoss(KRRLeaveOneOutL2regLoss):
+    def __init__(
+        self,
+        train_quantities,
+        train_Z=None,
+        train_Z_U=None,
+        train_Z_singular_values=None,
+        train_Z_Vh=None,
+        loss_function=MAE(),
+        overwrite_train_kernel=False,
+    ):
+        """
+        Auxiliary class for convenient l2reg optimization in qml2.models.sorf.SORFModel
+        """
+        self.train_quantities = train_quantities
+        if train_Z_U is None or train_Z_singular_values is None or train_Z_Vh is None:
+            assert train_Z is not None
+            train_Z_U, train_Z_singular_values, train_Z_Vh = svd_aligned(
+                train_Z, overwrite_a=overwrite_train_kernel
+            )
+        self.train_Z_U = train_Z_U
+        self.train_Z_singular_values = train_Z_singular_values
+        self.train_Z_Vh = train_Z_Vh
+        self.loss_function = loss_function
+        self.mean_diag_element = mean_(self.train_Z_singular_values**2)
+
+    def calculate_for_l2reg(self, l2reg):
+        return leaveoneout_error_loss(
+            None,
+            self.train_quantities,
+            l2reg,
+            error_loss=self.loss_function,
+            Z_U=self.train_Z_U,
+            Z_singular_values=self.train_Z_singular_values,
+            Z_Vh=self.train_Z_Vh,
+        )
+
+
+class SORFLeaveOneOutL2regOpt(KRRLeaveOneOutL2regOpt):
+    def __init__(self, train_feature_vectors_generator, train_quantities, **kwargs):
+        self.train_feature_vectors_generator = train_feature_vectors_generator
+        self.train_quantities = train_quantities
+        self.basic_init(**kwargs)
+
+    def get_l2reg_optimizer_from_parameters(self, parameters):
+        train_feature_vectors = self.train_feature_vectors_generator(parameters)
+        return SORFLeaveOneOutL2regLoss(
+            self.train_quantities,
+            train_Z=train_feature_vectors,
+            overwrite_train_kernel=True,
+            loss_function=self.loss_function,
+        )

@@ -178,7 +178,7 @@ class OML_Compound(Compound):
         if self.optimize_geometry:
             self.opt_coords = None
 
-        self.orb_reps = []
+        self.orb_reps = None
 
     # Parameters of the reference ab initio calculations.
     def calc_params(self):

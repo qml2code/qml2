@@ -1,6 +1,4 @@
 from ...jit_interfaces import all_, array_, concatenate_, dint_, empty_
-from ...orb_ml.oml_compound import OML_Compound, OML_Slater_pair, OML_Slater_pairs
-from ...orb_ml.representations import OML_orb_rep, OML_rep_params
 from ...utils import get_element_ids_from_sorted, get_sorted_elements
 from ..base_constructors import (
     get_datatype,
@@ -8,6 +6,22 @@ from ..base_constructors import (
     get_dict2datatype,
     get_transform_list_dict2datatype,
 )
+
+# all the orb_ml imports are made optional to not cause problems in ensemble.
+try:
+    from ...orb_ml.oml_compound import OML_Compound, OML_Slater_pair, OML_Slater_pairs
+    from ...orb_ml.representations import OML_orb_rep, OML_rep_params
+
+    default_OML_rep_params = OML_rep_params()
+except ModuleNotFoundError as ex:
+    from ...basic_utils import ExceptionRaisingClass
+
+    OML_rep_params = ExceptionRaisingClass(ex)
+    OML_orb_rep = ExceptionRaisingClass(ex)
+    OML_Compound = ExceptionRaisingClass(ex)
+    OML_Slater_pair = ExceptionRaisingClass(ex)
+    OML_Slater_pairs = ExceptionRaisingClass(ex)
+    default_OML_rep_params = None
 
 """
 FJK Compound is converted into a datatype where:
@@ -32,7 +46,7 @@ comp_dict_list2reps = get_transform_list_dict2datatype(comp_rep_def)
 slater_pairs_dict_list2reps = get_transform_list_dict2datatype(slater_pairs_rep_def)
 
 
-def fjk_rep_component_bounds(oml_rep_params=OML_rep_params()):
+def fjk_rep_component_bounds(oml_rep_params=default_OML_rep_params):
     max_angular_momentum = oml_rep_params.max_angular_momentum
     if max_angular_momentum == 0:
         nregions = 3  # for F, J, and K matrices
@@ -76,7 +90,7 @@ def processed_orb_rep(orb_rep: OML_orb_rep, local_representations=None):
 
 
 class FJKRepresentationCalc:
-    def __init__(self, oml_rep_params=OML_rep_params(), local_representation_processor=None):
+    def __init__(self, oml_rep_params=default_OML_rep_params, local_representation_processor=None):
         self.oml_rep_params = oml_rep_params
         self.local_representation_processor = local_representation_processor
         self.local_rep_added = self.local_representation_processor is not None
@@ -196,7 +210,7 @@ def processed_orb_rep_dn(orb_rep: OML_orb_rep, element_ids, local_representation
 class FJKdnRepresentationCalc(FJKRepresentationCalc):
     def __init__(
         self,
-        oml_rep_params=OML_rep_params(),
+        oml_rep_params=default_OML_rep_params,
         representation_function=None,
         representation_function_kwargs={},
         possible_nuclear_charges=array_([1, 6, 7, 8, 16], dtype=dint_),

@@ -1,5 +1,4 @@
 import typing
-from copy import deepcopy
 
 from numba import typed, typeof
 
@@ -9,8 +8,10 @@ from .base import (
     array_1D_,
     change_nested_component_name,
     default_int,
+    gradient_rcopy_prefix,
     is_red_vs_jit_copy_def,
     is_reducable_object,
+    rcopy_prefix,
 )
 
 # For adding datatype levels on top of the base.
@@ -27,15 +28,19 @@ def create_list_of(processed_definition_list, nested_def_list, default_item):
 
 
 def cadd_list(processed_definition_list, inside_copy, object_class):
-    if is_reducable_object(processed_definition_list):
-        return deepcopy
+    if processed_definition_list[0] in [rcopy_prefix, gradient_rcopy_prefix]:
 
-    @jit_(skip=is_red_vs_jit_copy_def(processed_definition_list))
-    def get_copy(other_list):
-        output = typed.List()
-        for other_element in other_list:
-            output.append(inside_copy(other_element))
-        return output
+        def get_copy(other_list):
+            return [inside_copy(other_element) for other_element in other_list]
+
+    else:
+
+        @jit_(skip=is_red_vs_jit_copy_def(processed_definition_list))
+        def get_copy(other_list):
+            output = typed.List()
+            for other_element in other_list:
+                output.append(inside_copy(other_element))
+            return output
 
     return get_copy
 

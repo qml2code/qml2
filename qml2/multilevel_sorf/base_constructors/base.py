@@ -1,7 +1,6 @@
 from numba import float64, int64
 
 from ...jit_interfaces import copy_, empty_, jit_, reshape_
-from ..base_functions import extract_row_from_1D
 from ..utils import jitclass_
 
 # Naming convention
@@ -274,61 +273,3 @@ def cpuest_add_single(processed_definition_list, routine):
             return routine(processed_object, input_object.nested_input_object) + 1
 
     return cpuest
-
-
-# for adding resize in the middle. Memory usage can be optimized if necessary.
-def add_resize(processed_function_definition_list, inside_routine):
-    if is_grad_def(processed_function_definition_list):
-
-        @jit_
-        def resize(
-            processed_object,
-            input_object,
-            grad_object,
-            hyperparameters,
-            input_work_array,
-            grad_work_array,
-        ):
-            nest_inp_obj = input_object.nested_input_object
-            nest_grad_obj = grad_object.nested_grad_object
-            output_size = input_object.output_size
-            output_size_gap = output_size - nest_inp_obj.output_size
-            grad_size_gap = grad_object.output_size - nest_grad_obj.output_size
-            inside_routine(
-                processed_object,
-                nest_inp_obj,
-                nest_grad_obj,
-                hyperparameters,
-                input_work_array[:-output_size_gap],
-                grad_work_array[:-grad_size_gap],
-            )
-            input_work_array[-output_size_gap:] = 0.0
-
-            for hyp_id in range(grad_object.nhyperparameters - 1, -1, -1):
-                old_storage = extract_row_from_1D(
-                    grad_work_array[:-grad_size_gap],
-                    hyp_id,
-                    nest_inp_obj.output_size,
-                    nest_grad_obj.nhyperparameters,
-                )
-                new_storage = extract_row_from_1D(
-                    grad_work_array, hyp_id, output_size, grad_object.nhyperparameters
-                )
-                new_storage[: nest_inp_obj.output_size] = old_storage[:]
-                new_storage[nest_inp_obj.output_size :] = 0.0
-
-    else:
-
-        @jit_
-        def resize(processed_object, input_object, hyperparameters, input_work_array):
-            nest_inp_obj = input_object.nested_input_object
-            output_size_gap = input_object.output_size - nest_inp_obj.output_size
-            inside_routine(
-                processed_object,
-                nest_inp_obj,
-                hyperparameters,
-                input_work_array[:-output_size_gap],
-            )
-            input_work_array[-output_size_gap:] = 0.0
-
-    return resize

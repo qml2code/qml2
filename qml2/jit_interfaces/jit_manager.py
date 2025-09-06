@@ -1,8 +1,7 @@
 # Introduced to ensure flags for different JIT compilers do not obstruct each other.
 import inspect
-import traceback
 
-from ..basic_utils import checked_logical_environ_val
+from ..basic_utils import ExceptionRaisingFunc, checked_logical_environ_val
 
 numba_flag = "numba"
 torch_flag = "torch"
@@ -46,8 +45,9 @@ class JITFailureException(Exception):
     pass
 
 
-class ExceptionRaisingFunc:
+class JITExceptionRaisingFunc(ExceptionRaisingFunc):
     def __init__(self, func, ex):
+        super().__init__(ex, returned_exception_type=JITFailureException)
         self.exception_text = (
             """
 Failure in JIT compilation.
@@ -60,11 +60,8 @@ function source:
             + """
 traceback:
 """
-            + "\n".join(traceback.format_exception(ex))
+            + self.exception_text
         )
-
-    def __call__(self, *args, **kwargs):
-        raise JITFailureException(self.exception_text)
 
 
 # The class has to be created due to numba.jit and torch.jit.script having different flags.
@@ -104,7 +101,7 @@ class defined_jit_:
         except (*self.possible_jit_failures,) as ex:
             #            assert type(ex) in self.possible_jit_failures
             if skip_jit_failures:
-                return ExceptionRaisingFunc(signature_or_function, ex)
+                return JITExceptionRaisingFunc(signature_or_function, ex)
             else:
                 raise JITFailureException
 

@@ -11,23 +11,31 @@ The "processed" versions handled throughout the code and "input" versions define
 
 For copying custom classes we also use functions with prefixes:
 copy, gcopy - JIT-compiled copy function for copying JIT classes inside JIT functions (K.Karan.: TBH not sure how useful); gcopy is for gradient versions of same input.
-rcopy, grcopy - copying reducable versions of classes into JIT-compiled.
-jcopy, gjcopy - copying JIT-compiled versions into reducable
+rcopy, grcopy - copying JIT-compiled versions into reducable.
+jcopy, gjcopy - copying reducable versions in JIT-compiled.
 
 For roughly estimating relative cost of processing different objects we also use cpuest and gcpuest prefixes.
 """
 
-from .base import get_extract_final_gradient, get_extract_final_result, input_object_prefix
+from .base import (
+    get_extract_final_gradient,
+    get_extract_final_result,
+    gradient_input_object_prefix,
+    input_object_prefix,
+)
 from .common import (
     calc_grad_input_size_parameters,
     calc_hyperparameter_num,
     calc_input_size_parameters,
     create_input_object_from_def,
+    datatype_prefix,
+    get_class2dict,
     get_class_from_def,
     get_copy_from_def,
     get_cpuest_from_def,
     get_datatype,
     get_datatype2dict,
+    get_dict2class,
     get_dict2datatype,
     get_routine_from_def,
     get_transform_list_dict2datatype,
@@ -45,6 +53,7 @@ from .special import (
     concatenation_lvl,
     element_id_switch_lvl,
     normalization_lvl,
+    project_resize_lvl,
     resize_lvl,
 )
 from .summation import component_sum_lvl, weighted_component_sum_lvl

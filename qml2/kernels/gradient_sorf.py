@@ -5,7 +5,6 @@
 
 from typing import Tuple, Union
 
-from ..data import nCartDim
 from ..dimensionality_reduction import choose_reductor, project_scale_local_representations
 from ..jit_interfaces import (
     cos_,
@@ -21,8 +20,10 @@ from ..jit_interfaces import (
     sin_,
 )
 from ..utils import check_allocation, get_atom_environment_ranges, get_element_ids_from_sorted
+from .gradient_common import atom_force_dim
 from .gradient_kernels import add_force_kernel_contributions, get_energy_force_ranges
 from .sorf import (
+    allow_sorf_numba_parallelization,
     fast_walsh_hadamard,
     generate_sorf_stack_phases,
     hadamard_norm_const,
@@ -90,7 +91,7 @@ def add_force_sorf_func(
     kernel_products,
     kernel_product_derivatives,
     natoms: int_,
-    nCartDim: int_ = nCartDim,
+    atom_force_dim: int_ = atom_force_dim,
 ) -> None:
     # Add the kernel element.
     kernel_products[:] += sorf_stack_wderivatives(
@@ -99,7 +100,7 @@ def add_force_sorf_func(
     # For each RFF calculate and add corresponding component.
     nfeatures = sorf_diags.shape[-1]
 
-    der_step = nCartDim * natoms
+    der_step = atom_force_dim * natoms
     der_lb = 0
     for feature in range(nfeatures):
         der_ub = der_lb + der_step
@@ -234,7 +235,7 @@ def rff_lower_upper_bounds(feature_stack: int_, init_size: int_) -> Tuple[int_, 
 
 
 # TODO: A more Python-esque way to rewrite avoiding copy-pasted between w. alphas - no alphas?
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=allow_sorf_numba_parallelization())
 def generate_local_force_sorf_processed_input(
     reduced_scaled_representations,
     representation_gradients,
@@ -251,7 +252,7 @@ def generate_local_force_sorf_processed_input(
     nfeature_stacks: int_,
     init_size: int_,
     true_nfeatures: Union[int_, None] = None,
-    nCartDim: int_ = nCartDim,
+    atom_force_dim: int_ = atom_force_dim,
 ):
     assert reduced_scaled_representations.shape[0] == element_ids.shape[0]
     assert all_sorf_diags.shape[0] == all_biases.shape[0]
@@ -270,7 +271,7 @@ def generate_local_force_sorf_processed_input(
         temp_red_reps = empty_((init_size,))
         temp_rff_der = empty_((init_size,))
         temp_kernel_products = empty_((nmols, init_size))
-        temp_kernel_product_derivatives = empty_((init_size * mol_ubound_arr[-1] * nCartDim))
+        temp_kernel_product_derivatives = empty_((init_size * mol_ubound_arr[-1] * atom_force_dim))
         lb_rff, ub_rff = rff_lower_upper_bounds(feature_stack, init_size)
 
         product_derivative_lb = 0
@@ -279,7 +280,7 @@ def generate_local_force_sorf_processed_input(
             ub_mol_rep = mol_ubound_arr[mol_id + 1]
             natoms = ub_mol_rep - lb_mol_rep
 
-            product_derivative_ub = product_derivative_lb + init_size * natoms * nCartDim
+            product_derivative_ub = product_derivative_lb + init_size * natoms * atom_force_dim
             generate_local_force_sorf_func(
                 reduced_scaled_representations[lb_mol_rep:ub_mol_rep],
                 representation_gradients[lb_mol_rep:ub_mol_rep],
@@ -305,7 +306,9 @@ def generate_local_force_sorf_processed_input(
         for mol_id in range(nmols):
             kernel[en_force_ranges_arr[mol_id], lb_rff:ub_rff] = temp_kernel_products[mol_id, :]
             # Copy forces to kernel.
-            prod_der_bound_step = nCartDim * (mol_ubound_arr[mol_id + 1] - mol_ubound_arr[mol_id])
+            prod_der_bound_step = atom_force_dim * (
+                mol_ubound_arr[mol_id + 1] - mol_ubound_arr[mol_id]
+            )
             for rff_id in range(init_size):
                 product_derivative_ub = product_derivative_lb + prod_der_bound_step
                 kernel[
@@ -369,7 +372,7 @@ def generate_local_force_sorf_product_full_stack(
     return output
 
 
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=allow_sorf_numba_parallelization())
 def generate_local_force_sorf_product_processed_input(
     reduced_scaled_representations,
     representation_gradients,

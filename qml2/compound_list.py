@@ -13,7 +13,7 @@ inherited_attribute_names = [
 @parallelized_inheritance(*inherited_attribute_names, base_class=Compound)
 class CompoundList(list):
     """
-    Provides a convenient way to embarrasingly parallelize operations with Compound class.
+    Acts as a list of `Compound` class objects, except it has several attributes `attr` such that running `attr(**kwargs, **parallel_kwargs)` runs `attr(**kwargs)` for each member of the list (where `attr` has a name in the form of `generate_*`). The `parallel_kwargs` are keyword arguments `num_procs` and `fixed_num_threads` as defined in `.parallelization.embarrassingly_parallel`.
     """
 
     def all_nuclear_charges(self):

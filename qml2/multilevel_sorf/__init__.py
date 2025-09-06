@@ -5,5 +5,6 @@ from .base_constructors import (
     get_transform_list_dict2datatype,
 )
 from .models import MultilevelSORFModel
+from .processed_object_constructors import RepresentationCalc
 from .sorf_calculation import MultilevelSORF
-from .utils import get_numba_list, jitclass_overview_str
+from .utils import jitclass_overview_str

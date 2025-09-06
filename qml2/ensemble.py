@@ -3,20 +3,35 @@ import itertools
 import os
 from copy import deepcopy
 
-# TODO make morfeus and rdkit dependences here optional to allow running some MSORF tests without morfeus-ml
-from morfeus.conformer import ConformerEnsemble
-from rdkit import Chem, RDLogger
-
-from .basic_utils import checked_environ_val, dump2pkl, loadpkl
+from .basic_utils import ExceptionRaisingClass, checked_environ_val, dump2pkl, loadpkl
 from .compound import Compound
 from .data import room_T
 from .jit_interfaces import array_
-from .orb_ml.oml_compound import OML_Compound, OML_Slater_pair, OML_Slater_pairs
-from .orb_ml.representations import OML_rep_params
 from .utils import weighted_array, write_compound_to_xyz_file
 
-# disable RdKit's verbose mode.
-RDLogger.DisableLog("rdApp.*")
+# morfeus and rdkit dependences here optional to allow running some MSORF tests without morfeus-ml
+try:
+    from morfeus.conformer import ConformerEnsemble
+    from rdkit import Chem, RDLogger
+
+    # disable RdKit's verbose mode.
+    RDLogger.DisableLog("rdApp.*")
+except ModuleNotFoundError as ex:
+    Chem = ExceptionRaisingClass(ex)
+    ConformerEnsemble = ExceptionRaisingClass(ex)
+
+try:
+    from .orb_ml.oml_compound import OML_Compound, OML_Slater_pair, OML_Slater_pairs
+    from .orb_ml.representations import OML_rep_params
+
+    default_OML_rep_params = OML_rep_params()
+except ModuleNotFoundError as ex:
+    OML_Compound = ExceptionRaisingClass(ex)
+    OML_Slater_pair = ExceptionRaisingClass(ex)
+    OML_Slater_pairs = ExceptionRaisingClass(ex)
+    OML_rep_params = ExceptionRaisingClass(ex)
+    default_OML_rep_params = None
+
 
 base_compound_class_dict = {
     "Compound": Compound,
@@ -140,6 +155,8 @@ class Ensemble:
                 random_seed=get_morfeus_random_seed(default_seed=self.random_seed),
             )
         except Exception as ex:
+            if isinstance(ex, ModuleNotFoundError):
+                raise ex
             if not isinstance(ex, ValueError):
                 print("#PROBLEMATIC_MORFEUS:", self.SMILES)
             return None
@@ -204,7 +221,7 @@ class Ensemble:
 
         self.save_attr2pkl("filtered_conformers", "processed_conformers")
 
-    def generate_orb_reps(self, rep_params: OML_rep_params = OML_rep_params()):
+    def generate_orb_reps(self, rep_params: OML_rep_params = default_OML_rep_params):
         self.run_calcs()
         for wcomp in self.filtered_conformer_compound_iterator():
             wcomp.compound.generate_orb_reps(rep_params=rep_params)

@@ -1,26 +1,8 @@
 # Miscellaneous routines for models.py.
 # TODO K.Karan.: if importance multipliers are revisited this should be revised.
 
-from typing import Callable
 
-from ..jit_interfaces import (
-    LinAlgError_,
-    abs_,
-    any_,
-    array_,
-    dot_,
-    empty_,
-    inf_,
-    isinf_,
-    isnan_,
-    jit_,
-    median_,
-    prange_,
-    repeat_,
-    sqrt_,
-    sum_,
-    zeros_,
-)
+from ..jit_interfaces import abs_, array_, dot_, empty_, jit_, median_, prange_, sqrt_, sum_
 from ..math import svd_aligned
 from ..models.sorf_hyperparameter_optimization import (
     leaveoneout_eigenvalue_multipliers,
@@ -53,17 +35,6 @@ def find_least_error_1D(A, b, mult=None):
     print("WARNING: find_least_error_1D called for small A vector, magnitude:", sum_(abs_A))
     # we'll just pick a point in the middle of possible minima.
     return array_([median_(renorm_b)])
-
-
-def regression_using_Z_SVD(
-    Z_matrix, l2reg, quantities, Z_U=None, Z_singular_values=None, Z_Vh=None
-):
-    if Z_U is None:
-        assert Z_matrix is not None
-        Z_U, Z_singular_values, Z_Vh = svd_aligned(Z_matrix)
-    transformed_alphas_rhs = dot_(Z_U.T, quantities)
-    transformed_alphas_rhs *= Z_singular_values / (Z_singular_values**2 + l2reg)
-    return dot_(Z_Vh.T, transformed_alphas_rhs)
 
 
 def error_matrices_for_shifts(
@@ -150,82 +121,17 @@ def get_model_uncertainty_fitted_ratios(
     return ratios, sq_distances
 
 
-# for ensuring nothing crashes during hyperparameter optimization.
-# TODO: Probably should be moved to qml2.models.math and re-used in ErrorLoss.find_minimum_linear_errors
-class SpecialValue(Exception):
-    pass
-
-
-possible_numerical_exceptions = (LinAlgError_, ZeroDivisionError)
-
-
-def check_special_value(func_output):
-    gradient = isinstance(func_output, tuple)
-    if gradient:
-        val = func_output[0]
-    else:
-        val = func_output
-    spec_val = isinf_(val) or isnan_(val)
-    if spec_val or (not gradient):
-        return spec_val
-    grad = func_output[1]
-    return any_(isinf_(grad)) or any_(isinf_(grad))
-
-
-# Inverse of the function.
-# Used in BOSS minimization.
-def ninv_f_special_value(x, gradient=False):
-    if isinstance(x, tuple):
-        assert gradient
-        x = x[1]
-    if gradient:
-        return 0.0, zeros_(x.shape)
-    else:
-        return 0.0
-
-
-def ninv_f(func_output, gradient=True):
-    if isinstance(func_output, Callable):
-
-        def new_func(x):
-            try:
-                return ninv_f(func_output(x))
-            except possible_numerical_exceptions:
-                return ninv_f_special_value(x, gradient=gradient)
-
-        return new_func
-
-    gradient = isinstance(func_output, tuple)
-
-    if check_special_value(func_output):
-        return ninv_f_special_value(func_output, gradient=gradient)
-
-    if gradient:
-        val = func_output[0]
-        grad = func_output[1]
-    else:
-        val = func_output
-    ninv_val = -1.0 / val
-    if not gradient:
-        return ninv_val
-    return ninv_val, ninv_val**2 * grad
-
-
-def f_winf(func, gradient=False):
-    def new_func(x):
-        try:
-            output = func(x)
-            if check_special_value(output):
-                raise SpecialValue
-            return output
-        except (*possible_numerical_exceptions, SpecialValue):
-            pass
-        val = inf_
-        if not gradient:
-            return val
-        if x.shape == ():
-            return val, inf_
-        else:
-            return val, repeat_(inf_, x.shape)
-
-    return new_func
+@jit_(numba_parallel=True)
+def inplace_add_dot_product(matrix, added_vectors):
+    """
+    Perform the following operation without allocating additional arrays:
+    matrix+=dot_(added_vectors.T, added_vectors)
+    """
+    npoints = added_vectors.shape[0]
+    nfeatures = added_vectors.shape[1]
+    assert nfeatures == matrix.shape[0]
+    assert nfeatures == matrix.shape[1]
+    for point_id in range(npoints):
+        added_features = added_vectors[point_id, :]
+        for feature_id in prange_(nfeatures):
+            matrix[feature_id] += added_features * added_features[feature_id]

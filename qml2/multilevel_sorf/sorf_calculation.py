@@ -32,6 +32,7 @@ from .base_constructors import (
     get_extract_final_gradient,
     get_extract_final_result,
     get_routine_from_def,
+    gradient_input_object_prefix,
     input_object_prefix,
     mixed_extensive_sorf_lvl,
     normalization_lvl,
@@ -39,6 +40,7 @@ from .base_constructors import (
     pass_variance_fork2_lvl,
     pass_variance_lvl,
     power_rescaling_lvl,
+    project_resize_lvl,
     rescaling_lvl,
     resize_lvl,
     sign_invariant_sorf_lvl,
@@ -49,12 +51,14 @@ from .base_constructors import (
     weighted_component_sum_lvl,
 )
 from .base_functions import create_sign_invariant_sorf_matrices
+from .pickle import Pickler
 
 implemented_levels = [
     normalization_lvl,
     weighted_component_sum_lvl,
     component_sum_lvl,
     resize_lvl,
+    project_resize_lvl,
     unscaled_sorf_lvl,
     sorf_lvl,
     mixed_extensive_sorf_lvl,
@@ -77,10 +81,10 @@ requires_hyperparameters = [
 ]
 
 
-def get_Z_matrix_calculator(sorf_routine):
+def get_Z_matrix_calculator(sorf_routine, disable_numba_parallelization=False):
     extract_final_result = get_extract_final_result()
 
-    @jit_(numba_parallel=True)
+    @jit_(numba_parallel=not disable_numba_parallelization)
     def calc_Z_matrix(
         processed_objects, Z_matrix, input_object, hyperparameters, thread_assignments=None
     ):
@@ -95,11 +99,11 @@ def get_Z_matrix_calculator(sorf_routine):
     return calc_Z_matrix
 
 
-def get_Z_matrix_calculator_wgrad(sorf_routine):
+def get_Z_matrix_calculator_wgrad(sorf_routine, disable_numba_parallelization=False):
     extract_final_result = get_extract_final_result()
     extract_final_gradient = get_extract_final_gradient()
 
-    @jit_(numba_parallel=True)
+    @jit_(numba_parallel=not disable_numba_parallelization)
     def calc_Z_matrix_wgrad(
         processed_objects,
         Z_matrix,
@@ -376,9 +380,7 @@ def guess_hyperparameters_from_dispersions(dispersions, level_type, level_parame
         return sigmas
 
 
-def get_sorf_variance(
-    processed_objects, function_definition_list, level_of_interest, input_object, hyperparameters
-):
+def get_sorf_variance_corrected_function_definition(function_definition_list, level_of_interest):
     special_level_replacements = {
         component_sum_lvl: component_cycle_lvl,
         weighted_component_sum_lvl: weighted_component_cycle_lvl,
@@ -400,10 +402,18 @@ def get_sorf_variance(
         else:
             new_level = pass_variance_lvl
         corrected_function_definition.append(new_level)
+    return corrected_function_definition
+
+
+def get_sorf_variance_calculator(
+    function_definition_list, level_of_interest, corrected_function_definition=None
+):
+    if corrected_function_definition is None:
+        corrected_function_definition = get_sorf_variance_corrected_function_definition(
+            function_definition_list, level_of_interest
+        )
     # create variance function and the input object for it
     variance_routine = get_routine_from_def(corrected_function_definition)
-    variance_input_creator = get_variance_input_creator_from_def(corrected_function_definition)
-    variance_input_object = variance_input_creator(input_object)
 
     extract_final_result = get_extract_final_result()
 
@@ -429,9 +439,17 @@ def get_sorf_variance(
 
         return total_avs2 - total_avs**2
 
-    variance = calc_variance(processed_objects, variance_input_object, hyperparameters)
+    return calc_variance
 
-    return variance
+
+def get_sorf_variance_input_creator(
+    function_definition_list, level_of_interest, corrected_function_definition=None
+):
+    if corrected_function_definition is None:
+        corrected_function_definition = get_sorf_variance_corrected_function_definition(
+            function_definition_list, level_of_interest
+        )
+    return get_variance_input_creator_from_def(corrected_function_definition)
 
 
 def checked_numba_list(input_list):
@@ -562,7 +580,13 @@ def all_parameter_lists(function_definition_list, parameter_list):
 
 
 class MultilevelSORF:
-    def __init__(self, function_definition_list, parameter_list, rng=None):
+    def __init__(
+        self,
+        function_definition_list,
+        parameter_list,
+        rng=None,
+        disable_numba_parallelization=False,
+    ):
         assert len(function_definition_list) == len(parameter_list)
         for level in function_definition_list:
             assert (isinstance(level, tuple)) or (level in implemented_levels), level
@@ -570,7 +594,9 @@ class MultilevelSORF:
         self.parameter_list = parameter_list
         # for test reproducability.
         self.rng = rng
-
+        #
+        self.disable_numba_parallelization = disable_numba_parallelization
+        self.pickler = None
         self.init_size_parameter_list()
         self.create_input_objects()
         self.init_input_object()
@@ -583,28 +609,44 @@ class MultilevelSORF:
             self.function_definition_list, gradient=True
         )
 
-        self.sorf_routine = None
-        self.sorf_routine_wgrad = None
+        jit_attrs = [
+            "copy_input_object",
+            "copy_grad_input_object",
+            "sorf_routine",
+            "sorf_routine_wgrad",
+            "Z_matrix_calculator",
+            "Z_matrix_calculator_wgrad",
+            "loss_function_calculator_wgrad",
+            "cpu_estimator",
+            "gradient_cpu_estimator",
+            "list_cpu_estimator",
+            "list_gradient_cpu_estimator",
+            "features_calculator",
+            "prediction_calculator",
+            "preditions_calculator",
+            "mean_diagonal_element_calculator",
+            "variance_calculators",
+            "variance_input_objects",
+        ]
+        for jit_attr in jit_attrs:
+            setattr(self, jit_attr, None)
 
-        self.Z_matrix_calculator = None
-        self.Z_matrix_calculator_wgrad = None
-
-        self.loss_function_calculator_wgrad = None
-
-        self.cpu_estimator = None
-        self.gradient_cpu_estimator = None
-
-        self.list_cpu_estimator = None
-        self.list_gradient_cpu_estimator = None
-
-        self.features_calculator = None
-        self.prediction_calculator = None
-        self.predictions_calculator = None
-
-        self.mean_diagonal_element_calculator = None
+        # NOTE: "self.variance_input_objects" is not a routine, but is put here because it'll be re-created from input_object on restart.
 
         # for individual molecule predictions
         self.input_work_array = None
+
+        complex_attr_definition_dict = dict(
+            (name, [prefix, *self.function_definition_list])
+            for name, prefix in [
+                ("input_object", input_object_prefix),
+                ("grad_input_object", gradient_input_object_prefix),
+            ]
+        )
+
+        self.pickler = Pickler(
+            deleted_attrs=jit_attrs, complex_attr_definition_dict=complex_attr_definition_dict
+        )
 
     def get_input_work_array(self):
         if self.input_work_array is None:
@@ -629,9 +671,13 @@ class MultilevelSORF:
         ):
             sorf_routine = self.get_sorf_routine(gradient=gradient)
             if gradient:
-                self.Z_matrix_calculator_wgrad = get_Z_matrix_calculator_wgrad(sorf_routine)
+                self.Z_matrix_calculator_wgrad = get_Z_matrix_calculator_wgrad(
+                    sorf_routine, disable_numba_parallelization=self.disable_numba_parallelization
+                )
             else:
-                self.Z_matrix_calculator = get_Z_matrix_calculator(sorf_routine)
+                self.Z_matrix_calculator = get_Z_matrix_calculator(
+                    sorf_routine, disable_numba_parallelization=self.disable_numba_parallelization
+                )
 
         if gradient:
             return self.Z_matrix_calculator_wgrad
@@ -932,6 +978,25 @@ class MultilevelSORF:
         else:
             self.init_input_object(input_object=input_object.nested_input_object, **nested_kwargs)
 
+    def get_sorf_variance(
+        self, training_objects, full_function_definition_list, ilevel, reasonable_hyperparameters
+    ):
+        if self.variance_calculators is None:
+            self.variance_calculators = {}
+        if ilevel not in self.variance_calculators:
+            self.variance_calculators[ilevel] = get_sorf_variance_calculator(
+                full_function_definition_list, ilevel
+            )
+        if self.variance_input_objects is None:
+            self.variance_input_objects = {}
+        if ilevel not in self.variance_input_objects:
+            self.variance_input_objects[ilevel] = get_sorf_variance_input_creator(
+                full_function_definition_list, ilevel
+            )(self.input_object)
+        return self.variance_calculators[ilevel](
+            training_objects, self.variance_input_objects[ilevel], reasonable_hyperparameters
+        )
+
     def hyperparameter_initial_guesses(
         self,
         training_objects,
@@ -982,11 +1047,10 @@ class MultilevelSORF:
                 full_function_definition_list = function_definition_list
             else:
                 full_function_definition_list = full_function_definition_list + topside_layers
-            current_dispersions = get_sorf_variance(
+            current_dispersions = self.get_sorf_variance(
                 training_objects,
                 full_function_definition_list,
                 ilevel,
-                self.input_object,
                 reasonable_hyperparameters,
             )
             new_hyperparameters = guess_hyperparameters_from_dispersions(
@@ -996,3 +1060,16 @@ class MultilevelSORF:
                 reasonable_hyperparameters, new_hyperparameters
             )
         return reasonable_hyperparameters
+
+    def get_pickler(self):
+        if self.pickler is None:
+            self.init_routines()
+        return self.pickler
+
+    def __getstate__(self):
+        # NOTE : added to ease up dill checking
+        return self.get_pickler().getstate(self)
+
+    def __setstate__(self, d):
+        pickler = d["pickler"]
+        self.__dict__ = pickler.state_dict(d)

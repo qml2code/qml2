@@ -112,6 +112,7 @@ def construct_mol_mol_kernel_asymmetric(orb_kernel_function):
 
     @jit_(numba_parallel=True)
     def mol_mol_kernel_asymmetric(
+        kernel_matrix,
         mol_scalar_reps1,
         mol_scalar_reps2,
         mol_orb_weights1,
@@ -128,7 +129,6 @@ def construct_mol_mol_kernel_asymmetric(orb_kernel_function):
     ):
         nmols_A = mol_rep_ubounds1.shape[0]
         nmols_B = mol_rep_ubounds2.shape[0]
-        kernel_matrix = empty_((nmols_A, nmols_B))
         for i_A in prange_(nmols_A):
             lbound_orb1, ubound_orb1 = get_lubound_from_ubounds(i_A, mol_orb_ubounds1)
             lbound_rep1, ubound_rep1 = get_lubound_from_ubounds(i_A, mol_rep_ubounds1)
@@ -146,7 +146,6 @@ def construct_mol_mol_kernel_asymmetric(orb_kernel_function):
                     orb_rep_ubounds2[lbound_orb2:ubound_orb2],
                     *orb_kern_args,
                 )
-        return kernel_matrix
 
     return mol_mol_kernel_asymmetric
 
@@ -156,6 +155,7 @@ def construct_mol_mol_kernel_symmetric(orb_kernel_function):
 
     @jit_(numba_parallel=True)
     def mol_mol_kernel_symmetric(
+        kernel_matrix,
         mol_scalar_reps,
         mol_orb_weights,
         rep_weights,
@@ -165,7 +165,6 @@ def construct_mol_mol_kernel_symmetric(orb_kernel_function):
         *orb_kern_args,
     ):
         nmols = mol_rep_ubounds.shape[0]
-        kernel_matrix = empty_((nmols, nmols))
         for i1 in prange_(nmols):
             lbound_orb1, ubound_orb1 = get_lubound_from_ubounds(i1, mol_orb_ubounds)
             lbound_rep1, ubound_rep1 = get_lubound_from_ubounds(i1, mol_rep_ubounds)
@@ -184,7 +183,6 @@ def construct_mol_mol_kernel_symmetric(orb_kernel_function):
                     *orb_kern_args,
                 )
                 kernel_matrix[i2, i1] = kernel_matrix[i1, i2]
-        return kernel_matrix
 
     return mol_mol_kernel_symmetric
 
@@ -379,11 +377,15 @@ def kernel_from_processed_input(
     sigmas: ndarray,
     global_sigma: float = None,
     norm: str = "l2",
+    out=None,
 ):
     A_input.init_temp_arrs(sigmas, norm=norm)
     symmetric = B_input is None
-    if not symmetric:
+    if symmetric:
+        kernel_matrix_shape = (A_input.num_mols, A_input.num_mols)
+    else:
         B_input.init_temp_arrs(sigmas, norm=norm)
+        kernel_matrix_shape = (A_input.num_mols, B_input.num_mols)
     if global_sigma is None:
         orb_product = "linear"
         kernel_args = ()
@@ -392,8 +394,14 @@ def kernel_from_processed_input(
         inv_sq_sigma = global_sigma ** (-2)
         kernel_args = (inv_sq_sigma,)
     kernel_func = get_kernel(orb_product=orb_product, symmetric=symmetric, norm=norm)
+    if out is None:
+        kernel_matrix = empty_(kernel_matrix_shape)
+    else:
+        kernel_matrix = out
+        assert out.shape == kernel_matrix_shape
     if symmetric:
-        return kernel_func(
+        kernel_func(
+            kernel_matrix,
             A_input.scalar_reps,
             A_input.orb_weights,
             A_input.arep_weights,
@@ -403,7 +411,8 @@ def kernel_from_processed_input(
             *kernel_args,
         )
     else:
-        return kernel_func(
+        kernel_func(
+            kernel_matrix,
             A_input.scalar_reps,
             B_input.scalar_reps,
             A_input.orb_weights,
@@ -418,31 +427,34 @@ def kernel_from_processed_input(
             B_input.orb_rep_ubounds,
             *kernel_args,
         )
+    return kernel_matrix
 
 
 # Convenient interfaces.
-def gaussian_kernel(A, B, sigmas, global_sigma, norm="l2"):
+def gaussian_kernel(A, B, sigmas, global_sigma, norm="l2", out=None):
     A_input = OML_KernelInput(A)
     B_input = OML_KernelInput(B)
     return kernel_from_processed_input(
-        A_input, B_input, sigmas, global_sigma=global_sigma, norm=norm
+        A_input, B_input, sigmas, global_sigma=global_sigma, norm=norm, out=out
     )
 
 
-def gaussian_kernel_symmetric(A, sigmas, global_sigma, norm="l2"):
+def gaussian_kernel_symmetric(A, sigmas, global_sigma, norm="l2", out=None):
     A_input = OML_KernelInput(A)
-    return kernel_from_processed_input(A_input, None, sigmas, global_sigma=global_sigma, norm=norm)
+    return kernel_from_processed_input(
+        A_input, None, sigmas, global_sigma=global_sigma, norm=norm, out=out
+    )
 
 
-def linear_kernel(A, B, sigmas, norm="l2"):
+def linear_kernel(A, B, sigmas, norm="l2", out=None):
     A_input = OML_KernelInput(A)
     B_input = OML_KernelInput(B)
-    return kernel_from_processed_input(A_input, B_input, sigmas, norm=norm)
+    return kernel_from_processed_input(A_input, B_input, sigmas, norm=norm, out=out)
 
 
-def linear_kernel_symmetric(A, sigmas, norm="l2"):
+def linear_kernel_symmetric(A, sigmas, norm="l2", out=None):
     A_input = OML_KernelInput(A)
-    return kernel_from_processed_input(A_input, None, sigmas, norm=norm)
+    return kernel_from_processed_input(A_input, None, sigmas, norm=norm, out=out)
 
 
 # For the hyperparameter initial guess.
@@ -523,20 +535,24 @@ def sign_checked_sqrts(vec):
     return out_vec
 
 
-def rep_stddevs(oml_compound_list):
-    kernel_input = OML_KernelInput(oml_compound_list)
+def rep_stddevs_from_kernel_input(compound_kernel_input):
     avs_av2s = find_vec_moments(
-        kernel_input.scalar_reps,
-        kernel_input.orb_weights,
-        kernel_input.arep_weights,
-        kernel_input.mol_orb_ubounds,
-        kernel_input.mol_rep_ubounds,
-        kernel_input.orb_rep_ubounds,
+        compound_kernel_input.scalar_reps,
+        compound_kernel_input.orb_weights,
+        compound_kernel_input.arep_weights,
+        compound_kernel_input.mol_orb_ubounds,
+        compound_kernel_input.mol_rep_ubounds,
+        compound_kernel_input.orb_rep_ubounds,
         array_([1, 2]),
     )
-    separator_id = kernel_input.scalar_reps.shape[-1]
+    separator_id = compound_kernel_input.scalar_reps.shape[-1]
     sigmas = sign_checked_sqrts(avs_av2s[separator_id:] - avs_av2s[:separator_id] ** 2)
     return sigmas
+
+
+def rep_stddevs(oml_compound_list):
+    compound_kernel_input = OML_KernelInput(oml_compound_list)
+    return rep_stddevs_from_kernel_input(compound_kernel_input)
 
 
 def renormed_smoothened_sigmas(sigmas, relatively_small_val=1.0e-3, norm="l2"):

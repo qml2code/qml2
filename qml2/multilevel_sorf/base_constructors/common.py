@@ -9,8 +9,7 @@ from numba import typed, typeof
 
 from ...basic_utils import checked_dict_entry, convert_dict_list, recursive_class_dict
 from ...jit_interfaces import all_
-from ...utils import is_power2
-from ..utils import get_numba_list
+from ...utils import get_numba_list, is_power2
 from .base import (
     cadd_simple,
     copy_prefix,
@@ -48,7 +47,13 @@ from .sorf_related import (
     unscaled_sign_invariant_sorf_lvl,
     unscaled_sorf_lvl,
 )
-from .special import compression_lvl, concatenation_lvl, element_id_switch_lvl, resize_lvl
+from .special import (
+    compression_lvl,
+    concatenation_lvl,
+    element_id_switch_lvl,
+    project_resize_lvl,
+    resize_lvl,
+)
 from .summation import component_sum_lvl, weighted_component_sum_lvl
 
 # Everything related to adding levels to objects, functions, and copy functions.
@@ -403,7 +408,7 @@ def calc_hyperparameter_num(step_str, parameter_dict, previous_input_size_parame
 
 
 def calc_output_size(previous_input_size_parameters, level_parameters, level_type):
-    if level_type in [resize_lvl, compression_lvl]:
+    if level_type in [resize_lvl, project_resize_lvl, compression_lvl]:
         return level_parameters["output_size"]
 
     previous_output_size = previous_input_size_parameters["output_size"]
@@ -436,7 +441,7 @@ def resize_work_size(output_size, previous_size_parameters):
 def calc_input_work_size(
     output_size, level_type, other_input_size_parameters={}, previous_input_size_parameters={}
 ):
-    if level_type == resize_lvl:
+    if level_type in [resize_lvl, project_resize_lvl]:
         return resize_work_size(output_size, previous_input_size_parameters)
     previous_work_size = previous_input_size_parameters["work_size"]
 
@@ -450,8 +455,6 @@ def calc_input_work_size(
         unscaled_sign_invariant_sorf_lvl,
     ]:
         return previous_work_size + output_size
-    elif level_type == resize_lvl:
-        return max(previous_work_size, output_size)
     elif level_type == concatenation_lvl:
         previous_output_size = previous_input_size_parameters["output_size"]
         return (
@@ -469,7 +472,7 @@ def calc_grad_work_size(
     input_size_parameters={},
     previous_input_size_parameters={},
 ):
-    if level_type == resize_lvl:
+    if level_type in [resize_lvl, project_resize_lvl]:
         return resize_work_size(grad_output_size, previous_grad_input_size_parameters)
 
     output_size = input_size_parameters["output_size"]
@@ -548,6 +551,13 @@ def calc_input_size_parameters(level_parameters, level_type, previous_input_size
         num_components = level_parameters["num_components"]
         final_dict = {"num_components": num_components}
         output_size = previous_output_size * num_components
+    elif level_type == project_resize_lvl:
+        final_dict = {}
+        assert (
+            "reductor" in level_parameters or "shape" in level_parameters
+        ), "Either `reductor` or `shape` keyword arguments should be specified for `project_resize`!"
+        final_dict["shape"] = checked_dict_entry(level_parameters, "shape", default_answer=(1, 1))
+        final_dict["reductor"] = checked_dict_entry(level_parameters, "reductor")
     else:
         final_dict = {}
     final_dict["output_size"] = output_size

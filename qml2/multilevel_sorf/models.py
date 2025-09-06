@@ -16,16 +16,9 @@
 # check whether they work correctly for uncertainty evaluation.
 
 # TODO K.Karan: steepest descent's efficiency suffers a little from Z_matrix being calculated along with derivatives at the same time.
-
-try:
-    from boss.bo.bo_main import BOMain
-except ModuleNotFoundError:
-    print(
-        "Hyperparameter optimization requires installation of aalto-boss via:\npip install aalto-boss"
-    )
 from scipy.optimize import minimize
 
-from ..basic_utils import display_scipy_convergence, now
+from ..basic_utils import ExceptionRaisingClass, display_scipy_convergence, now
 from ..jit_interfaces import (
     Module_,
     any_,
@@ -48,8 +41,10 @@ from ..jit_interfaces import (
     tiny_,
     zeros_,
 )
-from ..math import svd_aligned
+from ..math import regression_using_Z_SVD, svd_aligned
+from ..models.learning_curves import learning_curve_from_predictions
 from ..models.loss_functions import MAE, SquaredSelfConsistentLogCosh
+from ..models.math import f_winf, ninv_f, possible_numerical_exceptions
 from ..models.property_shifts import get_shift_coeffs
 from ..models.sorf_hyperparameter_optimization import (
     get_stat_factors,
@@ -60,19 +55,34 @@ from ..models.sorf_hyperparameter_optimization import (
     leaveoneout_loss_l2reg_der,
     mult_by_importance,
 )
-from ..utils import check_allocation, get_sorted_elements, l2_sq_norm
+from ..optimizers import global_optimize_1D
+from ..utils import (
+    check_allocation,
+    flatten_to_scalar,
+    get_numba_list,
+    get_sorted_elements,
+    l2_sq_norm,
+)
+from .base_constructors import datatype_prefix
 from .math import (
     error_matrices_for_shifts,
-    f_winf,
     get_model_uncertainty_fitted_ratios,
     get_training_plane_sq_distance_components,
     get_training_plane_sq_distances,
-    ninv_f,
-    possible_numerical_exceptions,
-    regression_using_Z_SVD,
 )
+from .pickle import Pickler
 from .sorf_calculation import MultilevelSORF
-from .utils import get_numba_list, merge_or_replace, optional_array_print_tuple
+from .utils import merge_or_replace, optional_array_print_tuple
+
+try:
+    from boss.bo.bo_main import BOMain
+except ModuleNotFoundError:
+    BOMain = ExceptionRaisingClass(
+        ModuleNotFoundError(
+            "Procedure requires installation of aalto-boss via:\npip install aalto-boss"
+        )
+    )
+
 
 implemented_hyperparameters_optimizers = ["steepest_descent", "boss"]
 
@@ -94,7 +104,6 @@ class MultilevelSORFModel(Module_):
         shift_opt_method="L-BFGS-B",
         ln_l2reg_opt_method="SLSQP",
         grad_opt_tolerance=1e-9,
-        processed_object_contructor=None,
         hyperparameter_optimizer="steepest_descent",
         error_loss_constructor=SquaredSelfConsistentLogCosh,
         error_loss_kwargs={},
@@ -114,6 +123,9 @@ class MultilevelSORFModel(Module_):
         sd_compromise_coeffs=[0.5, 0.25, 0.125],
         sd_reuse_Z_derivatives=True,
         rng=None,
+        object_definition_list=None,
+        objects_definition_list=None,
+        disable_numba_parallelization=False,
     ):
         """
         Multilevel SORF model containing automated routines for training, making predictions, and hyperparameter optimization.
@@ -151,8 +163,16 @@ class MultilevelSORFModel(Module_):
             sd_compromise_coeffs (list): compromise coefficient values used during steepest descent optimization in space of logarithms of sigmas. Default is `[0.5, 0.25, 0.125]`.
             sd_reuse_Z_derivatives (bool): if False, decrease memory usage (at the expense of CPU time) by not storing derivatives of Z matrix w.r.t. sigmas. Default is True.
             rng (np.random RNG or None): if not None, defines RNG used in random component initialization (e.g. biases and diagonal elements in SORF).
+            object_definition_list (list of None): definition list of the datatype the model acts on. Only needed for pickling.
+            objects_definition_list (list of None): definition list of the datatype array the model acts on (in case it's not a list of types defined by `object_definition_list`). Only needed for pickling.
+            disable_numba_parallelization (bool): if True calculating the feature matrix will not be parallelized over feature vectors (needed when principle components are used in a setting where np.dot is automatically parallelized). Default is False.
         """
-        self.MultilevelSORF = MultilevelSORF(function_definition_list, parameter_list, rng=rng)
+        self.MultilevelSORF = MultilevelSORF(
+            function_definition_list,
+            parameter_list,
+            rng=rng,
+            disable_numba_parallelization=disable_numba_parallelization,
+        )
         self.nhyperparameters = self.get_nhyperparameters()
 
         # for shifting quantities extensively or intensively
@@ -212,7 +232,10 @@ class MultilevelSORFModel(Module_):
         self.sd_compromise_coeffs = sd_compromise_coeffs
         self.sd_reuse_Z_derivatives = sd_reuse_Z_derivatives
 
-        self.processed_object_contructor = processed_object_contructor
+        self.object_definition_list = object_definition_list
+        self.objects_definition_list = objects_definition_list
+
+        self.pickler = None
 
         self.clear_training_set()
         self.init_hyperparameter_optimization_temp_arrs()
@@ -324,7 +347,7 @@ class MultilevelSORFModel(Module_):
         Assign training set used in hyperparameter optimization.
 
         Args:
-            training_objects (numba.List): Numba list of processed training set objects (i.e. objects generated with a routine in `.processed_object_contructors`).
+            training_objects (numba.List): Numba list of processed training set objects (i.e. objects generated with a routine in `.processed_object_constructors`).
             training_quantities (numpy.array): array of training set quantities of interest.
             training_nuclear_charges (list): list of numpy arrays of training set molecules' nuclear charges; used if extensive_quantity_shift is True. Default is None.
             training_importance_multipliers (numpy.array): weights for individual points during regression (not properly untested).
@@ -353,7 +376,7 @@ class MultilevelSORFModel(Module_):
         Calculate features for query objects.
 
         Args:
-            query_objects (numba.List): Numba list of processed objects (i.e. objects generated with a routine in `.processed_object_contructors`).
+            query_objects (numba.List): Numba list of processed objects (i.e. objects generated with a routine in `.processed_object_constructors`).
             hyperparameters (numpy.array): numpy.array of sigmas. If None (which is default) use self.hyperparameters.
             temp_Z_matrix (numpy.array or None): if not None, calculated `Z_matrix` will be stored in this array.
             gradient (bool): if True calculate derivatives of features w.r.t. hyperparameters. Default is False.
@@ -372,6 +395,21 @@ class MultilevelSORFModel(Module_):
             temp_Z_matrix=temp_Z_matrix,
             thread_assignments=thread_assignments,
         )
+
+    def calc_z_vector(self, query_object, hyperparameters=None):
+        """
+        Calculate features for a single query object.
+
+        Args:
+            query_object (custom Numba datatype): processed query object (i.e. generated with a routine in `.processed_object_constructors`)
+            hyperparameters (numpy.array or None): numpy.array of sigmas. If None (which is default) use self.hyperparameters.
+
+        Returns:
+            `z_vector` (numpy.array): feature vector.
+        """
+        if hyperparameters is None:
+            hyperparameters = self.hyperparameters
+        return self.MultilevelSORF.calc_features(query_object, hyperparameters)
 
     def calc_training_Z_matrix(self, hyperparameters=None, gradient=False):
         if gradient:
@@ -558,24 +596,26 @@ class MultilevelSORFModel(Module_):
         )
         print("###finished:", now())
 
-    def av_K_diag_element(self, Z_singular_values=None, Z_matrix=None):
+    def av_K_diag_element(self, Z_singular_values=None, Z_matrix=None, training_set_size=None):
         if Z_matrix is None:
             if Z_singular_values is None:
                 magn_Z = self.Z_singular_values
             else:
                 magn_Z = Z_singular_values
-            Z_shape = (self.training_set_size, self.nfeatures())
+            if training_set_size is None:
+                training_set_size = self.training_set_size
+            Z_shape = (training_set_size, self.nfeatures())
         else:
             magn_Z = Z_matrix
             Z_shape = Z_matrix.shape
         return l2_sq_norm(magn_Z) / min(Z_shape)
 
-    def get_loss_function_ln_l2reg(self, ln_l2reg, gradient=False):
-        while len(ln_l2reg.shape) != 0:
-            assert ln_l2reg.shape[0] == 1
-            ln_l2reg = ln_l2reg[0]
+    def get_loss_function_ln_l2reg(self, ln_l2reg, gradient=False, training_set_size=None):
+        ln_l2reg = flatten_to_scalar(ln_l2reg)  # for BOSS usage
         self.l2reg = exp_(ln_l2reg)
-        self.l2reg_diag_ratio = self.l2reg / self.av_K_diag_element()
+        self.l2reg_diag_ratio = self.l2reg / self.av_K_diag_element(
+            training_set_size=training_set_size
+        )
         self.eigenvalue_multipliers = leaveoneout_eigenvalue_multipliers(
             self.Z_singular_values, self.l2reg
         )
@@ -635,8 +675,10 @@ class MultilevelSORFModel(Module_):
         )
         return self.error_loss, loss_grad
 
-    def get_loss_function_ln_l2reg_wder(self, ln_l2reg):
-        return self.get_loss_function_ln_l2reg(ln_l2reg, gradient=True)
+    def get_loss_function_ln_l2reg_wder(self, ln_l2reg, training_set_size=None):
+        return self.get_loss_function_ln_l2reg(
+            ln_l2reg, gradient=True, training_set_size=training_set_size
+        )
 
     def init_Z_matrix_decomposition(
         self, weighted_Z_matrix=None, Z_U=None, Z_singular_values=None, Z_Vh=None
@@ -677,21 +719,27 @@ class MultilevelSORFModel(Module_):
         )
         print("###optimizing l2reg", now())
         # use BOSS to rougly locate the minimum.
-        ln_l2reg_range = self.ln_relative_l2reg_range + log_(self.av_K_diag_element())
-        bo = BOMain(
-            ninv_f(self.get_loss_function_ln_l2reg),
-            bounds=[ln_l2reg_range],
-            initpts=self.ln_relative_l2reg_opt_iterpts // 2,
-            iterpts=self.ln_relative_l2reg_opt_iterpts // 2,
-            minfreq=0,
-            outfile="boss_l2reg_opt.out",
-            rstfile="boss_l2reg_opt.rst",
+        if weighted_Z_matrix is None:
+            default_training_set_size = None
+        else:
+            default_training_set_size = weighted_Z_matrix.shape[0]
+        loss_function_ln_l2reg_kwargs = {"training_set_size": default_training_set_size}
+        ln_l2reg_range = self.ln_relative_l2reg_range + log_(
+            self.av_K_diag_element(training_set_size=default_training_set_size)
         )
-        res = bo.run()
-        ln_l2reg_boss_min = res.select("x_glmin", -1)[0]
+        ln_l2reg_boss_min = global_optimize_1D(
+            ninv_f(self.get_loss_function_ln_l2reg, **loss_function_ln_l2reg_kwargs),
+            ln_l2reg_range,
+            total_iterpts=self.ln_relative_l2reg_opt_iterpts,
+            opt_name="l2reg_opt",
+        )
         # Finalize minima location with gradient optimization.
         go = minimize(
-            f_winf(self.get_loss_function_ln_l2reg_wder, gradient=True),
+            f_winf(
+                self.get_loss_function_ln_l2reg_wder,
+                gradient=True,
+                **loss_function_ln_l2reg_kwargs,
+            ),
             ln_l2reg_boss_min,
             method=self.ln_l2reg_opt_method,
             jac=True,
@@ -701,7 +749,7 @@ class MultilevelSORFModel(Module_):
         ln_l2reg_final_min = go.x[0]
         # finalize calculations
         try:
-            self.get_loss_function_ln_l2reg(ln_l2reg_final_min)
+            self.get_loss_function_ln_l2reg(ln_l2reg_final_min, **loss_function_ln_l2reg_kwargs)
         except possible_numerical_exceptions:
             raise Z_matrix_error
         print("###optimal ln_l2reg:", ln_l2reg_final_min)
@@ -927,7 +975,7 @@ class MultilevelSORFModel(Module_):
         print("###Final shifts" + ending_str, *optional_array_print_tuple(self.quantity_shift))
         print("###Final loss" + ending_str, self.error_loss)
 
-    def optimize_hyperparameters_boss(self):
+    def optimize_hyperparameters_boss(self, initial_hyperparameter_guess=None):
         self.error_loss_function = self.error_loss_constructor(
             self.boss_compromise_coeff, **self.error_loss_kwargs
         )
@@ -1000,9 +1048,13 @@ class MultilevelSORFModel(Module_):
             ln_hyperparameters -= loss_grad * ln_step
             prev_loss_grad = loss_grad
 
-    def optimize_hyperparameters_sd_single_perturbation(self, initial_guess_perturbation=None):
+    def optimize_hyperparameters_sd_single_perturbation(
+        self, initial_guess_perturbation=None, initial_hyperparameter_guess=None
+    ):
         print("###Steepest descent gradient optimization started.")
         self.hyperparameter_optimization_start(self.sd_compromise_coeffs[0])
+        if initial_hyperparameter_guess is not None:
+            self.hyperparameter_initial_guesses = array_(initial_hyperparameter_guess)
         if initial_guess_perturbation is not None:
             self.hyperparameter_initial_guesses *= exp_(initial_guess_perturbation)
         saved_Z_quantities = {}
@@ -1019,14 +1071,17 @@ class MultilevelSORFModel(Module_):
     def get_nhyperparameters(self):
         return self.MultilevelSORF.nhyperparameters()
 
-    def optimize_hyperparameters_sd(self, initial_guess_perturbations=None):
+    def optimize_hyperparameters_sd(
+        self, initial_guess_perturbations=None, initial_hyperparameter_guess=None
+    ):
         if initial_guess_perturbations is None:
             initial_guess_perturbations = zeros_((1, self.get_nhyperparameters()))
 
         min_loss = None
         for initial_guess_perturbation in initial_guess_perturbations:
             self.optimize_hyperparameters_sd_single_perturbation(
-                initial_guess_perturbation=initial_guess_perturbation
+                initial_hyperparameter_guess=initial_hyperparameter_guess,
+                initial_guess_perturbation=initial_guess_perturbation,
             )
             if (min_loss is not None) and (min_loss <= self.error_loss):
                 continue
@@ -1047,7 +1102,10 @@ class MultilevelSORFModel(Module_):
         self.hyperparameter_optimization_final_print("all perturbations")
 
     def optimize_hyperparameters(
-        self, hyperparameter_optimizer=None, initial_guess_perturbations=None
+        self,
+        hyperparameter_optimizer=None,
+        initial_guess_perturbations=None,
+        initial_hyperparameter_guess=None,
     ):
         """
         Optimize hyperpareters with the currently assigned training set.
@@ -1059,10 +1117,13 @@ class MultilevelSORFModel(Module_):
         if hyperparameter_optimizer is None:
             hyperparameter_optimizer = self.hyperparameter_optimizer
         if hyperparameter_optimizer == "boss":
-            return self.optimize_hyperparameters_boss()
+            return self.optimize_hyperparameters_boss(
+                initial_hyperparameter_guess=initial_hyperparameter_guess
+            )
         if hyperparameter_optimizer == "steepest_descent":
             return self.optimize_hyperparameters_sd(
-                initial_guess_perturbations=initial_guess_perturbations
+                initial_hyperparameter_guess=initial_hyperparameter_guess,
+                initial_guess_perturbations=initial_guess_perturbations,
             )
         raise Exception
 
@@ -1205,6 +1266,10 @@ class MultilevelSORFModel(Module_):
         """
         Expand the currently assigned training set and refit the model accordingly.
         """
+        # assert to avoid a hard-to-track Numba crash.
+        assert (
+            len(added_training_objects) != 0
+        ), "Number of added training points should be non-zero!"
         self.training_objects = merge_or_replace(self.training_objects, added_training_objects)
         self.training_quantities = merge_or_replace(
             self.training_quantities, added_training_quantities
@@ -1446,17 +1511,35 @@ class MultilevelSORFModel(Module_):
             hyperparameter_optimization_kwargs=hyperparameter_optimization_kwargs,
             init_thread_assignments=init_thread_assignments,
         )
-        MAE_means = []
-        MAE_stds = []
-        for subset_predictions in all_predictions:
-            subset_MAEs = []
-            for predictions in subset_predictions:
-                errors = predictions - test_quantities
-                if test_importance_multipliers is not None:
-                    errors *= test_importance_multipliers
-                subset_MAEs.append(lc_error_loss_function(errors))
-            MAE_mean = mean_(subset_MAEs)
-            MAE_std = std_(subset_MAEs)
-            MAE_means.append(MAE_mean)
-            MAE_stds.append(MAE_std)
-        return MAE_means, MAE_stds
+        return learning_curve_from_predictions(
+            all_predictions,
+            test_quantities,
+            error_loss_function=lc_error_loss_function,
+            test_importance_multipliers=test_importance_multipliers,
+        )
+
+    def get_query_objects_full_definition_list(self):
+        if self.objects_definition_list is None:
+            if self.object_definition_list is None:
+                return None
+            else:
+                objects_definition_list = self.object_definition_list + ["list"]
+        else:
+            objects_definition_list = self.objects_definition_list
+        return [datatype_prefix, *objects_definition_list]
+
+    def get_pickler(self):
+        if self.pickler is None:
+            complex_attr_definition_list = {}
+            objects_full_definition_list = self.get_query_objects_full_definition_list()
+            if objects_full_definition_list is not None:
+                complex_attr_definition_list = {"training_objects": objects_full_definition_list}
+            self.pickler = Pickler(complex_attr_definition_dict=complex_attr_definition_list)
+        return self.pickler
+
+    def __getstate__(self):
+        return self.get_pickler().getstate(self)
+
+    def __setstate__(self, d):
+        pickler = d["pickler"]
+        self.__dict__ = pickler.state_dict(d)

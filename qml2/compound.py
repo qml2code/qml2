@@ -98,15 +98,3 @@ class Compound:
             self.representation = generate_cmbdf(
                 self.nuclear_charges, self.coordinates, convolutions, **kwargs
             )
-
-
-# Additional constructors.
-
-
-def ASE2Compound(ase_in, **other_kwargs):
-    """
-    Convert an ASE object into qml2.compound.
-    """
-    return Compound(
-        coordinates=ase_in.get_positions(), atomtypes=ase_in.get_chemical_symbols(), **other_kwargs
-    )

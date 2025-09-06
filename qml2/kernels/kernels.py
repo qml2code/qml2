@@ -532,7 +532,7 @@ def allocate_kernel(
         assert (
             new_shape == out.shape
         ), "ERROR: mismatch in dimensions of desired kernel output and the one provided in the `out` keyword."
-        return out
+        return out, many_sigmas
 
 
 def calculate_global_kernel(
@@ -661,7 +661,7 @@ precompiled_matern_kernels = {}
 matern_kernel_specifics = {"type": "Matern"}
 
 
-def matern_kernel(A, B, sigma, order=0, metric="l1", out=None):
+def matern_kernel(A, B, sigma, out=None, order=0, metric="l1"):
     return calculate_global_kernel(
         A,
         B,
@@ -678,7 +678,7 @@ def matern_kernel_symmetric(A, sigma, **kwargs):
     return matern_kernel(A, None, sigma, **kwargs)
 
 
-def local_matern_kernel(A, B, A_natoms, B_natoms, sigma, order=0, metric="l1", out=None):
+def local_matern_kernel(A, B, A_natoms, B_natoms, sigma, out=None, order=0, metric="l1"):
     return calculate_local_kernel(
         A,
         B,
@@ -736,7 +736,7 @@ def local_dn_gaussian_kernel_symmetric(A, A_natoms, A_ncharges, sigma, out=None)
 
 
 def local_dn_matern_kernel(
-    A, B, A_natoms, B_natoms, A_ncharges, B_ncharges, sigma, order=0, metric="l1", out=None
+    A, B, A_natoms, B_natoms, A_ncharges, B_ncharges, sigma, out=None, order=0, metric="l1"
 ):
     return calculate_local_dn_kernel(
         A,
@@ -754,8 +754,10 @@ def local_dn_matern_kernel(
     )
 
 
-def local_dn_matern_kernel_symmetric(A, A_natoms, A_ncharges, sigma, **kwargs):
-    return local_dn_matern_kernel(A, None, A_natoms, None, A_ncharges, None, sigma, **kwargs)
+def local_dn_matern_kernel_symmetric(A, A_natoms, A_ncharges, sigma, out=None, **kwargs):
+    return local_dn_matern_kernel(
+        A, None, A_natoms, None, A_ncharges, None, sigma, out=out, **kwargs
+    )
 
 
 # KK: introduced for making it easier to get symmetric and asymmetric versions of the same kernel

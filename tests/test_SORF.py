@@ -1,13 +1,12 @@
 # Test generation of Structured Orthogonal Random Features.
-from conftest import (
-    add_checksum_to_dict,
-    compare_or_create,
+from conftest import add_checksum_to_dict, compare_or_create, int2rng
+
+from qml2.dimensionality_reduction import (
     fix_reductor_signs,
     fix_reductors_signs,
-    int2rng,
+    get_reductor,
+    get_reductors_diff_species,
 )
-
-from qml2.dimensionality_reduction import get_reductor, get_reductors_diff_species
 from qml2.jit_interfaces import default_rng_, randint_, random_, seed_
 from qml2.kernels.sorf import (
     create_sorf_matrices,

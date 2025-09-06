@@ -18,21 +18,21 @@ Some parts of the code depend on additional dependencies that can be installed w
 
 - `orb_ml` - for FJK (machine learning from orbital information).
 
-- `msorf` - for MSORF (everything in `qml2.multilevel_sorf`).
+- `models` - for hyperparameter optimization procedures in `qml2.models` and `qml2.multilevel_sorf`.
 
 - `morfeus` - for applications dependend on `morfeus-ml` package (everything related to conformer ensemble generation).
 
 - `torch` - Torch functionality (efficiency questionable right now TBH).
 
-For example, to use the `orb_ml` and `msorf` optional dependecy flags in your installation use
+For example, to use the `orb_ml` and `models` optional dependecy flags in your installation use
 
    ```bash
-   pip install .[orb_ml,msorf]
+   pip install .[orb_ml,models]
    ```
 or, if `makefile` is installed,
 
    ```
-   make install OPT=[orb_ml,msorf]
+   make install OPT=[orb_ml,models]
    ```
 
 ## :clipboard: Testing
@@ -71,6 +71,9 @@ This will create `manual.html` file that can be opened with an Internet browser.
 `QML2_NUM_PROCS` - number of processes spawned by parts of the code parallelized via `python.multiprocessing` (training set representations in model-related classes, `pyscf` calculations made by `OML_Compound_list` attribute calls). For limiting number of OpenMP threads spawned in turn by these processes use suppress options (such as `KRRModel` class's `training_reps_suppress_openmp` option). Also see `parallelization.set_default_num_procs`.
 
 `QML2_AVOID_NUMBA_NUMPY_PARALLELIZATION` - some Numba routines in the code call in parallel Numpy routines, which creates problems in some setups (e.g. when both Numba and Numpy try to parallelize over a large number of threads without taking each other into account). Setting this environmental variable to `1` disables Numba parallelization in such routines, leaving them to be parallelized exclusively with Numpy.
+
+`QML2_AVOID_SORF_NUMBA_PARALLELIZATION` - setting this environmental variable to `1` disables Numba parallelization over feature vectors for SORF routines in `qml2.kernels.sorf` and `qml2.kernels.gradient_sorf` (also referred to in the corresponding `qml2.models` classes). Helps if reductors are used in systems where Numba and Numpy try to parallelize simultaneously (see `QML2_AVOID_NUMBA_NUMPY_PARALLELIZATION`).
+
 
 ### Experimental
 

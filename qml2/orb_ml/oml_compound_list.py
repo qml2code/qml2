@@ -9,7 +9,12 @@ from .oml_compound import ASE2OML_Compound, OML_Compound, OML_Slater_pair, OML_S
     base_classes=[OML_Compound, OML_Slater_pair, OML_Slater_pairs],
 )
 class OML_CompoundList(CompoundList):
-    """The class was created to allow easy embarrassing parallelization of operations with lists of OML_Compound or OML_Slater_pair objects."""
+    """
+    Acts like a list of OML_Compound, OML_Slater_pair, or OML_Slater_pairs objects, but has two additional attributes:
+    - `run_calcs(**kwags, **parallel_kwargs)` - perform `run_calcs(**kwargs)` for each list member;
+    - `generate_orb_reps(**kwags, **parallel_kwargs)` - perform `generate_orb_reps(**kwargs)` for each list member.
+    The `parallel_kwargs` are keyword arguments `num_procs` and `fixed_num_threads` as defined in `.parallelization.embarrassingly_parallel`.
+    """
 
     def mats_savefile2temp_calc_dirs(self):
         # not_pairs = isinstance(self[0], OML_Compound)

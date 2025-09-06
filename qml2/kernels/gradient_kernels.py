@@ -1,4 +1,3 @@
-from ..data import nCartDim
 from ..jit_interfaces import (
     dim0float_array_,
     dint_,
@@ -12,6 +11,7 @@ from ..jit_interfaces import (
     save_,
 )
 from ..utils import get_atom_environment_ranges, l2_sq_norm
+from .gradient_common import atom_force_dim
 from .kernels import half_inv_sq_sigma
 
 # KK: The module could be made more efficient, but TBH I think we should soon be switching to QMLightning anyway,
@@ -79,14 +79,14 @@ def add_force_kernel_contributions(
     B_rel_neighbor_num: int_,
     kernel_component: ndarray_,
     temp_der_arr: ndarray_,
-    nCartDim: int_ = nCartDim,
+    atom_force_dim: int_ = atom_force_dim,
 ):
     tda = save_(temp_der_arr)
     nreps = B_drep.shape[0]
     for neighbor_id in range(int(B_rel_neighbor_num)):
         cur_neighbor = B_rel_neighbors[neighbor_id]
-        lb = int(cur_neighbor * nCartDim)
-        ub = lb + nCartDim
+        lb = int(cur_neighbor * atom_force_dim)
+        ub = lb + atom_force_dim
         for rep_comp_id in range(nreps):
             # Note the minus sign, because we are calculating force, not gradient.
             kernel_component[lb:ub] -= tda[rep_comp_id] * B_drep[rep_comp_id, neighbor_id, :]
@@ -127,7 +127,7 @@ def construct_add_gp_kernel_function(base_kernel_function_w2ders):
         kernel_component: ndarray_,
         temp_der_arr: ndarray_,
         sigma_param: dim0float_array_,
-        nCartDim: int_ = nCartDim,
+        atom_force_dim: int_ = atom_force_dim,
     ):
         temp_der_arr = save_(temp_der_arr)
         base_kernel_function_w2ders(A_rep, B_rep, temp_der_arr, sigma_param)
@@ -149,12 +149,12 @@ def construct_add_gp_kernel_function(base_kernel_function_w2ders):
         nreps = A_rep.shape[0]
         for A_neighbor_id in range(A_rel_neighbor_num):
             cur_neighbor_A = A_rel_neighbors[A_neighbor_id]
-            lbA = cur_neighbor_A * nCartDim + 1
+            lbA = cur_neighbor_A * atom_force_dim + 1
             for B_neighbor_id in range(B_rel_neighbor_num):
                 cur_neighbor_B = B_rel_neighbors[B_neighbor_id]
-                lbB = cur_neighbor_B * nCartDim + 1
-                ubB = lbB + nCartDim
-                for iA in range(nCartDim):
+                lbB = cur_neighbor_B * atom_force_dim + 1
+                ubB = lbB + atom_force_dim
+                for iA in range(atom_force_dim):
                     for rep_id_A in range(nreps):
                         for rep_id_B in range(nreps):
                             kernel_component[lbA + iA, lbB:ubB] += (
@@ -252,8 +252,8 @@ def construct_local_dn_gp_kernel_function(base_kernel_function_w2ders):
 
 # Local force kernels.
 @jit_
-def prediction_vector_length(natoms: int_, nCartDim: int_ = nCartDim):
-    return natoms * nCartDim + 1
+def prediction_vector_length(natoms: int_, atom_force_dim: int_ = atom_force_dim):
+    return natoms * atom_force_dim + 1
 
 
 @jit_
@@ -486,7 +486,7 @@ def get_derivative_kernel(symmetric=False, derivatives="oqml", type="gaussian"):
 
 
 def num_en_forces(atom_num_arr):
-    return atom_num_arr.shape[0] + nCartDim * int(sum(atom_num_arr))
+    return atom_num_arr.shape[0] + atom_force_dim * int(sum(atom_num_arr))
 
 
 def local_dn_oqml_gaussian_kernel(

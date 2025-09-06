@@ -144,7 +144,7 @@ ninv_MAE_local_dn = callable_ninv_MAE_local_dn(
     training_representations_list,
     training_nuclear_charges_list,
     training_energies,
-    **ninv_MAE_kwargs
+    **ninv_MAE_kwargs,
 )
 
 training_representations = np.concatenate(training_representations_list)
@@ -187,7 +187,7 @@ test_kernel = local_dn_matern_kernel(
     test_nuclear_charges,
     training_nuclear_charges,
     sigma,
-    **matern_kwargs
+    **matern_kwargs,
 )
 predictions = np.dot(test_kernel, alphas)
 print("final")

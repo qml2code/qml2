@@ -1,7 +1,6 @@
 # Collection of routines for convenient handling of energies and forces during training of force models.
 from typing import Tuple
 
-from ..data import nCartDim
 from ..jit_interfaces import (
     array_,
     dint_,
@@ -14,6 +13,7 @@ from ..jit_interfaces import (
     sqrt_,
     sum_,
 )
+from ..kernels.gradient_common import atom_force_dim
 from ..kernels.gradient_kernels import get_energy_force_ranges
 from ..utils import check_allocation
 
@@ -21,7 +21,7 @@ from ..utils import check_allocation
 # For conveniently getting kernel element and derivative indices from force and gp kernels.
 @jit_
 def energy_forces_ids(
-    atom_nums: ndarray_, dint_: dtype_ = dint_, nCartDim: int_ = nCartDim
+    atom_nums: ndarray_, dint_: dtype_ = dint_, atom_force_dim: int_ = atom_force_dim
 ) -> Tuple[ndarray_, ndarray_]:
     nmols = atom_nums.shape[0]
     energy_force_ranges = get_energy_force_ranges(atom_nums)
@@ -35,15 +35,15 @@ def energy_forces_ids(
         cur_lb = en_id + 1
         for _ in range(int(atom_nums[i_mol])):
             force_ids[i_atom, 0] = cur_lb
-            cur_lb += nCartDim
+            cur_lb += atom_force_dim
             force_ids[i_atom, 1] = cur_lb
             i_atom += 1
     return energy_ids, force_ids
 
 
 @jit_
-def nen_force_vals(natoms, nCartDim: int_ = nCartDim):
-    return natoms.shape[0] + nCartDim * sum_(natoms)
+def nen_force_vals(natoms, atom_force_dim: int_ = atom_force_dim):
+    return natoms.shape[0] + atom_force_dim * sum_(natoms)
 
 
 def prediction_vector_to_forces_energies(
@@ -53,7 +53,7 @@ def prediction_vector_to_forces_energies(
     tot_natoms = sum_(used_atom_nums)
     energy_ids, force_ids = energy_forces_ids(used_atom_nums)
     energy_output = check_allocation((nmols,), output=energy_output)
-    forces_output = check_allocation((tot_natoms, nCartDim), output=forces_output)
+    forces_output = check_allocation((tot_natoms, atom_force_dim), output=forces_output)
     for en_count, energy_id in enumerate(energy_ids):
         energy_output[en_count] = prediction_vector[energy_id]
         for atom_count, force_bounds in enumerate(force_ids):
@@ -63,13 +63,13 @@ def prediction_vector_to_forces_energies(
 
 def combine_energy_forces_rhs(energies, forces_list):
     tot_natoms = sum(f.shape[0] for f in forces_list)
-    nvals = len(energies) + tot_natoms * nCartDim
+    nvals = len(energies) + tot_natoms * atom_force_dim
     output = empty_((nvals,))
     en_id = 0
     for en, f in zip(energies, forces_list):
         output[en_id] = en
         force_lb = en_id + 1
-        force_ub = force_lb + f.shape[0] * nCartDim
+        force_ub = force_lb + f.shape[0] * atom_force_dim
         output[force_lb:force_ub] = f.flatten()
         en_id = force_ub
     return output
@@ -77,12 +77,12 @@ def combine_energy_forces_rhs(energies, forces_list):
 
 def get_importance_multipliers(atom_nums, energy_importance):
     energy_importance_multiplier = sqrt_(array_(energy_importance))
-    all_importance_multipliers = empty_((atom_nums.shape[0] + nCartDim * sum_(atom_nums),))
+    all_importance_multipliers = empty_((atom_nums.shape[0] + atom_force_dim * sum_(atom_nums),))
     lb = 0
     for atom_num in atom_nums:
         all_importance_multipliers[lb] = energy_importance_multiplier
         lb += 1
-        ub = lb + atom_num * nCartDim
+        ub = lb + atom_num * atom_force_dim
         all_importance_multipliers[lb:ub] = 1 / sqrt_(array_(float(atom_num)))
         lb = ub
 
@@ -112,7 +112,7 @@ def merge_grad_lists(all_rep_grads_list, all_rel_atoms_list, all_rel_atom_nums_l
         max_num_rel_neighbors = max(max_num_rel_neighbors, max(rel_atom_nums))
 
     rep_size = all_rep_grads_list[0].shape[1]
-    all_rep_grads = empty_((nconfigs, rep_size, max_num_rel_neighbors, nCartDim))
+    all_rep_grads = empty_((nconfigs, rep_size, max_num_rel_neighbors, atom_force_dim))
     all_rel_atoms = empty_((nconfigs, max_num_rel_neighbors), dtype=dint_)
     all_rel_atom_nums = empty_((nconfigs,), dtype=dint_)
 

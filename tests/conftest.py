@@ -1,4 +1,5 @@
 # KK: the entire conftest setup was largely inspired by qml1/qmllib's.
+import csv
 import glob
 import os
 import tarfile
@@ -11,6 +12,18 @@ from qml2.compound import Compound
 from qml2.jit_interfaces import array_
 from qml2.utils import all_possible_indices, read_xyz_file, write_compound_to_xyz_file
 
+# name of environmental variable that activates "benchmark generation mode" which does not raise exceptions when a benchmark is created.
+qml2_bench_gen_var_name = "QML2_BENCHMARK_GENERATION_ON"
+
+
+def benchmark_generation_on():
+    if qml2_bench_gen_var_name in os.environ:
+        val = os.environ[qml2_bench_gen_var_name]
+        assert val in ["0", "1"], f"{qml2_bench_gen_var_name} should be 0 or 1!"
+        return val == "1"
+    return False
+
+
 # For creating "perturbed" QM7 files.
 test_dir = os.path.dirname(__file__)
 test_data_dir = test_dir + "/test_data"
@@ -20,6 +33,8 @@ def get_benchmark_filename(benchmark_name):
     return test_data_dir + "/" + benchmark_name + ".dat"
 
 
+qm7_hof_txt = test_data_dir + "/hof_qm7.txt"
+qm7_nuclear_charges = array_([1, 6, 7, 8, 16])
 original_xyz_tar = test_data_dir + "/qm7.tar.gz"
 perturbed_xyz_dir = test_dir + "/test_data/perturbed_qm7"
 # The perturbation magnitude is probably not enough to disturb true heat of formation from the values in
@@ -97,6 +112,15 @@ def perturbed_xyz_nhatoms_interval(min_nhatoms, max_nhatoms, seed=1):
         if (nhatoms >= min_nhatoms) and (nhatoms <= max_nhatoms):
             output.append(xyz)
     return output
+
+
+def get_qm7_hof():
+    csv_file = open(qm7_hof_txt)
+    reader = csv.reader(csv_file, delimiter=" ")
+    energies = []
+    for row in reader:
+        energies.append(float(row[1]))
+    return array_(energies)
 
 
 # KK: storing entire arrays can become very wasteful, hence subroutines for creating random checksums of arrays.
@@ -359,6 +383,7 @@ def add_checksum_to_dict(
             stacks=stacks,
             starting_all_passed=starting_all_passed,
             compared_name=compared_name,
+            extra_print_string=extra_print_string,
             **kwargs,
         )
     if rng is None:
@@ -367,6 +392,18 @@ def add_checksum_to_dict(
         arr, rng, nstack_checksums=nstack_checksums, stacks=stacks
     )
     return starting_all_passed
+
+
+def raise_absent_benchmark_exception(exception_str_bench_name, partially_checked=False):
+    if partially_checked:
+        base_str = "WARNING: a partially checked benchmark was absent"
+    else:
+        base_str = "WARNING: a benchmark was absent but was created"
+    warning_str = base_str + ": " + exception_str_bench_name
+    if benchmark_generation_on():
+        print(warning_str)
+    else:
+        raise Exception(warning_str)
 
 
 def compare_or_create(
@@ -394,14 +431,12 @@ def compare_or_create(
         if jit_dependent:
             exception_str_bench_name += " (" + used_jit_name + ")"
         if partial_comparison:
-            raise Exception(
-                "WARNING: a partially checked benchmark was absent: " + exception_str_bench_name
-            )
-        # The benchmark needs to be created and a warning about this needs to be raised.
-        print_checksum_dict(full_benchmark_name, checksums_dict)
-        raise Exception(
-            "WARNING: a benchmark was absent but was created: " + exception_str_bench_name
-        )
+            raise_absent_benchmark_exception(exception_str_bench_name, partially_checked=True)
+        else:
+            # The benchmark needs to be created and a warning about this needs to be raised.
+            print_checksum_dict(full_benchmark_name, checksums_dict)
+            raise_absent_benchmark_exception(exception_str_bench_name)
+        return
 
     if not partial_comparison:
         assert sorted(checksums_dict.keys()) == sorted(
@@ -426,15 +461,6 @@ def compare_or_create(
         )
         all_passed = all_passed and passed
     assert all_passed
-
-
-def fix_reductor_signs(reductor):
-    reductor *= np.sign(reductor[0])
-
-
-def fix_reductors_signs(reductors):
-    for red_id in range(reductors.shape[0]):
-        fix_reductor_signs(reductors[red_id])
 
 
 @njit(fastmath=True, parallel=True)

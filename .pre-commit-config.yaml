@@ -78,7 +78,7 @@ repos:
             stages: [commit-msg]
             args: []
 
-    -   repo: https://github.com/kieran-ryan/pyprojectsort
-        rev: v0.4.0
+    -   repo: https://github.com/tox-dev/pyproject-fmt
+        rev: v2.5.0
         hooks:
-        -   id: pyprojectsort
+        -   id: pyproject-fmt

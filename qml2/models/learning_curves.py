@@ -67,12 +67,11 @@ def learning_curve_KRR(
     return MAEs, MAEs_avs_std
 
 
-# TODO: combine learning_curve from .multilevel_sorf.models with this.
 def learning_curve_from_predictions(
     all_predictions, test_quantities, error_loss_function=MAE(), test_importance_multipliers=None
 ):
     """
-    K.Karan: a common function for different model classes.
+    Learning curves from predictions (used in different model classes). Includes calculating both the mean loss and the standard deviation (e.g. over several k-folds).
     """
     loss_means = []
     loss_stds = []

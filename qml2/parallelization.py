@@ -79,6 +79,11 @@ def embarrassingly_parallel_no_thread_fix(
 def embarrassingly_parallel(
     func, array, other_args, other_kwargs={}, num_procs=None, fixed_num_threads=None
 ):
+    """
+    Find in parallel results of `[func(element, *other_args, **other_kwargs) for element in array]`. Additional keyword arguments are:
+    - num_procs (int or None): if not None defines number of Python processes launched in parallel. If None the number is given by `multiprocessing.cpu_count()`.
+    - fixed_num_threads (int or None): if not None the function launches the calculations in a child environment where OpenMP threads for all processes are set to fixed_num_threads.
+    """
     if type(other_args) is not tuple:
         other_args = (other_args,)
     if fixed_num_threads is not None:
@@ -139,7 +144,7 @@ dump2pkl(output, dump_filename)
 def create_run_func_exec(
     func, array, other_args, other_kwargs, num_procs=None, fixed_num_threads=None
 ):
-    tmpdir = tempfile.TemporaryDirectory(dir=".")
+    tmpdir = tempfile.TemporaryDirectory(dir=".", delete=False)
 
     dump_filename = tmpdir.name + "/temp_dump.pkl"
 
@@ -152,7 +157,8 @@ def create_run_func_exec(
     create_func_exec(
         dump_filename, exec_scr_name, num_procs=num_procs, fixed_num_threads=fixed_num_threads
     )
-    run(sys.executable, exec_scr_name)
+    res = run(sys.executable, exec_scr_name)
+    assert res.returncode == 0, f"Parallel execution failed, see: {tmpdir.name}"
     output = loadpkl(dump_filename)
     tmpdir.cleanup()
     return output
@@ -202,7 +208,7 @@ class ParallelizedAttribute:
         fixed_num_threads=default_fixed_num_threads_val,
         test_mode=False,
         serial=False,
-        **kwargs
+        **kwargs,
     ):
         if serial:
             for i, el in enumerate(list_obj):

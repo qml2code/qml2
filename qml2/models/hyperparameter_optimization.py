@@ -1,13 +1,28 @@
 # Collection of routines for hyperparameter optimization specific for KRR.
 import numpy as np
 from numpy import ndarray
-from scipy.linalg import cho_factor, cho_solve, svd
+from scipy.linalg import cho_factor, cho_solve, eigh, svd
 from scipy.optimize import bisect
 
 from ..basic_utils import now
+from ..jit_interfaces import (
+    LinAlgError_,
+    allow_numba_numpy_parallelization,
+    any_,
+    copy_detached_,
+    diag_indices_from_,
+    dot_,
+    empty_,
+    exp_,
+    jit_,
+    prange_,
+)
 from ..math import cho_solve as cho_solve_full
 from ..math import solve_from_svd
-from ..utils import get_atom_environment_ranges, l2_norm_sq_dist
+from ..optimizers import global_optimize_1D
+from ..utils import flatten_to_scalar, get_atom_environment_ranges, l2_norm_sq_dist
+from .loss_functions import MAE
+from .math import ninv_f
 
 
 # Separating sets into training and test.
@@ -387,7 +402,7 @@ class callable_ninv_MAE_local(callable_ninv_MAE):
         training_representations_list,
         training_quantities,
         kernel_function_kwargs={},
-        **kfolds_kwargs
+        **kfolds_kwargs,
     ):
         """
         For optimization of sigma and lambda.
@@ -409,7 +424,7 @@ class callable_ninv_MAE_local(callable_ninv_MAE):
             self.training_representations,
             self.training_natoms,
             sigma,
-            **self.kernel_function_kwargs
+            **self.kernel_function_kwargs,
         )
 
 
@@ -421,7 +436,7 @@ class callable_ninv_MAE_local_dn(callable_ninv_MAE_local):
         training_nuclear_charges_list,
         training_quantities,
         kernel_function_kwargs={},
-        **kfolds_kwargs
+        **kfolds_kwargs,
     ):
         """
         For optimization of sigma and lambda.
@@ -444,7 +459,7 @@ class callable_ninv_MAE_local_dn(callable_ninv_MAE_local):
             self.training_natoms,
             self.training_nuclear_charges,
             sigma,
-            **self.kernel_function_kwargs
+            **self.kernel_function_kwargs,
         )
 
 
@@ -481,3 +496,164 @@ def GPR_Marginal_Likelihood_Logarithm(train_kernel, train_quantities):
     MLL = 0.0
     for quant_id in range(nquants):
         MLL += GPR_MLL_single_quantity(cholesky_factorization, train_quantities[quant_id])
+
+
+# For calculating leave-one-out errors using DOI:10.1016/S0031-3203(03)00136-5
+def get_leaveoneout_stat_factors(train_kernel, cholesky_factorization):
+    inverse_multiplied_kernel = cho_solve(cholesky_factorization, train_kernel)
+    inv_mult_kern_diag_indices = diag_indices_from_(inverse_multiplied_kernel)
+    inv_mult_kern_diag_elements = inverse_multiplied_kernel[inv_mult_kern_diag_indices]
+    return 1 / (1 - inv_mult_kern_diag_elements)
+
+
+def KRR_leaveoneout_errors(train_kernel, train_quantities, l2reg=None):
+    """
+    KRR leave-one-out errors calculated with the formula from DOI:10.1016/S0031-3203(03)00136-5.
+    """
+    if l2reg is None:
+        l2reg_train_kernel = train_kernel
+    else:
+        l2reg_train_kernel = copy_detached_(train_kernel)
+        diag_indices = diag_indices_from_(l2reg_train_kernel)
+        l2reg_train_kernel[diag_indices] += l2reg
+    cho_overwrite_a = l2reg is not None
+    cholesky_factorization = cho_factor(l2reg_train_kernel, overwrite_a=cho_overwrite_a)
+    alphas = cho_solve(cholesky_factorization, train_quantities)
+    repr_quantities = dot_(train_kernel, alphas)
+    stat_factors = get_leaveoneout_stat_factors(train_kernel, cholesky_factorization)
+    return (repr_quantities - train_quantities) * stat_factors
+
+
+def KRR_leaveoneout_loss(train_kernel, train_quantities, l2reg=None, loss_function=MAE()):
+    """
+    Loss (by default MAE) KRR from leave-one-out errors calculated with the formula from DOI:10.1016/S0031-3203(03)00136-5.
+    """
+    leaveoneout_errors = KRR_leaveoneout_errors(train_kernel, train_quantities, l2reg=l2reg)
+    return loss_function(leaveoneout_errors)
+
+
+# Procedures for optimizing l2reg w.r.t. leave-one-out loss using pre-calculated np.linalg.eigh.
+@jit_(numba_parallel=allow_numba_numpy_parallelization())
+def get_leaveoneout_stat_factors_from_eigh(eigenval_multipliers, train_kernel_eigenvectors):
+    npoints = train_kernel_eigenvectors.shape[0]
+    dot_products = empty_(eigenval_multipliers.shape)
+    for point_id in prange_(npoints):
+        dot_products[point_id] = dot_(
+            eigenval_multipliers, train_kernel_eigenvectors[point_id] ** 2
+        )
+    return 1 / (1 - dot_products)
+
+
+class KRRLeaveOneOutL2regLoss:
+    def __init__(
+        self,
+        train_quantities,
+        train_kernel=None,
+        train_kernel_eigenvalues=None,
+        train_kernel_eigenvectors=None,
+        loss_function=MAE(),
+        overwrite_train_kernel=False,
+    ):
+        """
+        For convenient optimization of l2 regularization w.r.t. leave-one-out errors.
+
+        NOTE: The multitude of attributes related to different versions of l2reg are because:
+            - l2reg is the quantity actually added to the training kernel's diagonal matrix;
+            - l2reg_rel_diag is the ratio of l2reg and average diagonal element in the training kernel; works better e.g. if you re-train on larger molecules with local or local-dn kernels;
+            - ln_l2reg_rel_diag is the most convenient variable for optimization since it is connected to l2reg_rel_diag and enforces the latter's positivity.
+        """
+        if train_kernel_eigenvalues is None or train_kernel_eigenvectors is None:
+            assert train_kernel is not None
+            train_kernel_eigenvalues, train_kernel_eigenvectors = eigh(
+                train_kernel, overwrite_a=overwrite_train_kernel
+            )
+        self.train_kernel_eigenvalues = train_kernel_eigenvalues
+        self.train_kernel_eigenvectors = train_kernel_eigenvectors
+        self.train_quantities = train_quantities
+        self.mean_diag_element = np.mean(self.train_kernel_eigenvalues)
+        self.loss_function = loss_function
+        self.train_quantities = train_quantities
+        self.eigenvalue_rhs = dot_(self.train_kernel_eigenvectors.T, train_quantities)
+
+    def calculate_for_l2reg(self, l2reg):
+        if any_(self.train_kernel_eigenvalues <= -l2reg):
+            raise LinAlgError_
+        eigenval_multipliers = self.train_kernel_eigenvalues / (
+            self.train_kernel_eigenvalues + l2reg
+        )
+        reproduced_quantities = dot_(
+            self.train_kernel_eigenvectors, eigenval_multipliers * self.eigenvalue_rhs
+        )
+        stat_factors = get_leaveoneout_stat_factors_from_eigh(
+            eigenval_multipliers, self.train_kernel_eigenvectors
+        )
+        leaveoneout_errors = (reproduced_quantities - self.train_quantities) * stat_factors
+        return self.loss_function(leaveoneout_errors)
+
+    def l2reg_from_relative(self, l2reg_rel_diag):
+        return l2reg_rel_diag * self.mean_diag_element
+
+    def l2reg_from_relative_ln(self, ln_l2reg_rel_diag):
+        return self.l2reg_from_relative(exp_(ln_l2reg_rel_diag))
+
+    def calculate_for_l2reg_rel_diag(self, l2reg_rel_diag):
+        l2reg = self.l2reg_from_relative(l2reg_rel_diag)
+        return self.calculate_for_l2reg(l2reg)
+
+    def calculate_for_ln_l2reg_rel_diag(self, ln_l2reg_rel_diag):
+        l2reg = self.l2reg_from_relative_ln(ln_l2reg_rel_diag)
+        return self.calculate_for_l2reg(l2reg)
+
+    def __call__(self, ln_l2reg_rel_diag):
+        # for optimizer calls
+        ln_l2reg_rel_diag = flatten_to_scalar(ln_l2reg_rel_diag)
+        return self.calculate_for_ln_l2reg_rel_diag(ln_l2reg_rel_diag)
+
+
+class KRRLeaveOneOutL2regOpt:
+    def __init__(self, train_kernel_generator, train_quantities, **kwargs):
+        """
+        Class that for a given sigma uses BOSS to optimize l2reg w.r.t. leave-one-out error loss, and then calculates the corresponding minimal loss
+        """
+        self.train_kernel_generator = train_kernel_generator
+        self.train_quantities = train_quantities
+        self.basic_init(**kwargs)
+
+    def basic_init(
+        self,
+        loss_function=MAE(),
+        ln_l2reg_diag_ratio_bounds=[-24.0, 0.0],
+        total_iterpts=32,
+        test_mode=False,
+    ):
+        self.loss_function = loss_function
+        self.ln_l2reg_diag_ratio_bounds = ln_l2reg_diag_ratio_bounds
+        self.total_iterpts = total_iterpts
+        self.test_mode = test_mode
+
+    def get_l2reg_optimizer_from_parameters(self, parameters):
+        train_kernel = self.train_kernel_generator(parameters)
+        return KRRLeaveOneOutL2regLoss(
+            self.train_quantities,
+            train_kernel=train_kernel,
+            overwrite_train_kernel=True,
+            loss_function=self.loss_function,
+        )
+
+    def __call__(self, parameters, min_output=False):
+        internal_l2reg_loss = self.get_l2reg_optimizer_from_parameters(parameters)
+        final_minimized_l2reg_loss = ninv_f(internal_l2reg_loss)
+        min_ln_l2reg_rel_diag = global_optimize_1D(
+            final_minimized_l2reg_loss,
+            self.ln_l2reg_diag_ratio_bounds,
+            opt_name="l2reg_opt",
+            total_iterpts=self.total_iterpts,
+            test_mode=self.test_mode,
+        )
+
+        if min_output:
+            return min_ln_l2reg_rel_diag, internal_l2reg_loss
+
+        final_loss = final_minimized_l2reg_loss(min_ln_l2reg_rel_diag)
+        print("Final loss:", final_loss)
+        return final_loss

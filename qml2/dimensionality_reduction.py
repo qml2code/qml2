@@ -11,7 +11,8 @@ from .jit_interfaces import (
     ndarray_,
     permuted_range_,
     prange_,
-    standard_normal_,
+    sign_,
+    standard_normal_array_from_rng_,
     sum_,
     svd_,
 )
@@ -19,7 +20,7 @@ from .utils import check_allocation, get_sorted_elements
 
 
 @jit_
-def get_rand_reductor(nreps: int_, npcas: int_):
+def get_rand_reductor(nreps: int_, npcas: int_, rng=None):
     """
     Creates random reductor in a way compilable by both Numba and Torch.
     TODO: I think it's unbiased, but should check.
@@ -27,7 +28,7 @@ def get_rand_reductor(nreps: int_, npcas: int_):
     print("WARNING! get_rand_reductor had to be called for a missing element.")
     max_dim = max(nreps, npcas)
     min_dim = min(nreps, npcas)
-    rand_vecs = standard_normal_((max_dim, min_dim))
+    rand_vecs = standard_normal_array_from_rng_((max_dim, min_dim), rng=rng)
     rand_reductor, _, _ = svd_(rand_vecs, full_matrices=False)
     if nreps < npcas:
         return rand_reductor.T
@@ -36,9 +37,9 @@ def get_rand_reductor(nreps: int_, npcas: int_):
 
 # KK: Only difference from what Nickolas Browning used is added option to use all atomic environments in the PCA.
 @jit_
-def get_reductor(representations, npcas: int_, num_samples: int_ = 1024):
+def get_reductor(representations, npcas: int_, num_samples: int_ = 1024, rng=None):
     nreps = representations.shape[1]
-    if (nreps <= npcas) or (num_samples <= npcas):
+    if (nreps < npcas) or (num_samples < npcas):
         # TODO KK: I suspect creating a random reductor should make the procedure less
         # demanding w.r.t. ntransforms, but never checked it.
         # Just pad with zeros. Useful for fitting into Hadamard transform.
@@ -46,7 +47,7 @@ def get_reductor(representations, npcas: int_, num_samples: int_ = 1024):
         # for i in range(nreps):
         #     reductor[i, i] = 1.0
         # return reductor
-        return get_rand_reductor(nreps, npcas)
+        return get_rand_reductor(nreps, npcas, rng=rng)
 
     if num_samples is None:
         used_representations = representations
@@ -84,6 +85,7 @@ def get_reductors_diff_species(
     npcas: int_,
     num_samples: int_ = 1024,
     sorted_elements: Union[None, ndarray_] = None,
+    rng=None,
 ) -> Tuple[ndarray_, ndarray_]:
     if sorted_elements is None:
         sorted_elements = get_sorted_elements(ncharges)
@@ -95,9 +97,9 @@ def get_reductors_diff_species(
         # TODO:KK:this use of where_ causes errors with TorchScript.
         # el_reps = representations[where_(ncharges == element)]
         el_reps = elements_where_(representations, (ncharges == element))
-        all_reductors[i_element, :, :] = get_reductor(el_reps, npcas, num_samples=num_samples)[
-            :, :
-        ]
+        all_reductors[i_element, :, :] = get_reductor(
+            el_reps, npcas, num_samples=num_samples, rng=rng
+        )[:, :]
     return all_reductors, sorted_elements
 
 
@@ -194,3 +196,18 @@ def project_scale_local_representations(
         )
         output[:, :] /= sigma
         return output
+
+
+def fix_reductor_signs(reductor):
+    """
+    Make first element of each reductor's row positive. Introduced for test output consistency.
+    """
+    reductor *= sign_(reductor[0])
+
+
+def fix_reductors_signs(reductors):
+    """
+    Make first element of each reductors' row positive. Introduced for test output consistency.
+    """
+    for red_id in range(reductors.shape[0]):
+        fix_reductor_signs(reductors[red_id])

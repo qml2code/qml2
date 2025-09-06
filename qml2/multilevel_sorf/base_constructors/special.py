@@ -1,9 +1,10 @@
 from numba import typed
 
-from ...jit_interfaces import jit_, l2_norm_
+from ...jit_interfaces import copy_, dot_, empty_, jit_, l2_norm_
 from ..base_functions import compress, extract_row_from_1D, inplace_normalization_wgrad
 from ..utils import jitclass_
 from .base import (
+    array_2D_,
     basic_grad_input_components,
     basic_input_components,
     cadd_simple,
@@ -45,7 +46,10 @@ class redinp_resize_:
         self.work_size = work_size
 
 
-inp_resize_ = jitclass_(basic_input_components)(redinp_resize_)
+# NOTE K.Karan.: writing `inp_resize_ = jitclass_(basic_input_components)(redinp_resize_)` seems to mess up picklability of redinp_resize_.
+@jitclass_(basic_input_components)
+class inp_resize_(redinp_resize_):
+    pass
 
 
 class gredinp_resize_:
@@ -55,23 +59,35 @@ class gredinp_resize_:
         self.work_size = work_size
 
 
-ginp_resize_ = jitclass_(basic_grad_input_components)(gredinp_resize_)
+@jitclass_(basic_grad_input_components)
+class ginp_resize_(gredinp_resize_):
+    pass
 
 
-def redcopy_resize_(inp_object):
+def jcopy_resize_(inp_object):
     return inp_resize_(inp_object.output_size, inp_object.work_size)
 
 
-copy_resize_ = jit_(redcopy_resize_)
+def rcopy_resize_(inp_object):
+    return redinp_resize_(inp_object.output_size, inp_object.work_size)
 
 
-def gredcopy_resize_(ginp_object):
+copy_resize_ = jit_(jcopy_resize_)
+
+
+def gjcopy_resize_(ginp_object):
     return ginp_resize_(
         ginp_object.output_size, ginp_object.nhyperparameters, ginp_object.work_size
     )
 
 
-gcopy_resize_ = jit_(gredcopy_resize_)
+def grcopy_resize_(ginp_object):
+    return gredinp_resize_(
+        ginp_object.output_size, ginp_object.nhyperparameters, ginp_object.work_size
+    )
+
+
+gcopy_resize_ = jit_(gjcopy_resize_)
 
 
 def add_resize(processed_function_definition_list, inside_routine):
@@ -138,6 +154,104 @@ def cpuest_resize_(processed_object, input_object):
 
 @jit_
 def gcpuest_resize_(processed_object, input_object, grad_object):
+    return 0.0
+
+
+# Projecting on principal components before resizing.
+project_resize_lvl = "project_resize"
+
+
+@jit_
+def f_project_resize_(processed_object, input_object, hyperparameters, input_work_array):
+    reductor = input_object.reductor
+    projected_vector_size = reductor.shape[1]
+    work_size = input_work_array.shape[0]
+
+    output_start_id = work_size - input_object.output_size
+    output_finish_id = output_start_id + projected_vector_size
+
+    input_work_array[output_start_id:output_finish_id] = dot_(reductor.T, processed_object[:])
+    input_work_array[output_finish_id:] = 0.0
+
+
+@jit_
+def gf_project_resize_(
+    processed_object, input_object, grad_object, hyperparameters, input_work_array, grad_work_array
+):
+    f_project_resize_(processed_object, input_object, hyperparameters, input_work_array)
+
+
+class redinp_project_resize_:
+    def __init__(self, output_size=0, work_size=0, shape=(1, 1), reductor=None):
+        self.output_size = output_size
+        self.work_size = work_size
+        if reductor is None:
+            self.reductor = empty_(shape)
+        else:
+            self.reductor = reductor
+
+
+# NOTE K.Karan.: writing `inp_resize_ = jitclass_(basic_input_components)(redinp_resize_)` seems to mess up picklability of redinp_resize_.
+@jitclass_(basic_input_components + [("reductor", array_2D_)])
+class inp_project_resize_(redinp_project_resize_):
+    pass
+
+
+class gredinp_project_resize_:
+    def __init__(self, output_size=0, nhyperparameters=0, work_size=0):
+        self.output_size = output_size
+        self.nhyperparameters = nhyperparameters
+        self.work_size = work_size
+
+
+@jitclass_(basic_grad_input_components)
+class ginp_project_resize_(gredinp_resize_):
+    pass
+
+
+def jcopy_project_resize_(inp_object):
+    return inp_project_resize_(
+        inp_object.output_size,
+        inp_object.work_size,
+        inp_object.reductor.shape,
+        copy_(inp_object.reductor),
+    )
+
+
+def rcopy_project_resize_(inp_object):
+    return redinp_resize_(
+        inp_object.output_size,
+        inp_object.work_size,
+        inp_object.reductor.shape,
+        copy_(inp_object.reductor),
+    )
+
+
+copy_project_resize_ = jit_(jcopy_project_resize_)
+
+
+def gjcopy_project_resize_(ginp_object):
+    return ginp_project_resize_(
+        ginp_object.output_size, ginp_object.nhyperparameters, ginp_object.work_size
+    )
+
+
+def grcopy_project_resize_(ginp_object):
+    return gredinp_project_resize_(
+        ginp_object.output_size, ginp_object.nhyperparameters, ginp_object.work_size
+    )
+
+
+gcopy_project_resize_ = jit_(gjcopy_project_resize_)
+
+
+@jit_
+def cpuest_project_resize_(processed_object, input_object):
+    return 0.0
+
+
+@jit_
+def gcpuest_project_resize_(processed_object, input_object, grad_object):
     return 0.0
 
 

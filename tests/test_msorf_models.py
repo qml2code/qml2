@@ -234,6 +234,7 @@ def run_multilevel_sorf_calc(
         minor_train_nuclear_charges = None
     else:
         minor_train_nuclear_charges = train_nuclear_charges[: ntrain // 2]
+    checksums = {}
     if full_optimization_cycle:
         if not lc_hyperparameter_reoptimization:
             model.assign_training_set(
@@ -255,7 +256,6 @@ def run_multilevel_sorf_calc(
             rng=random,
             init_thread_assignments=init_thread_assignments,
         )
-        checksums = {}
         # include the MAE info into checksum
         add_reshaped_to_dict(checksums, "mean_MAEs", array_(mean_MAE))
         add_checksum_to_dict(checksums, "std_MAEs", array_(std_MAE), nstack_checksums=1)
@@ -348,7 +348,6 @@ def run_several_multilevel_sorf_calcs(
     """
     Run several run_multilevel_sorf_calc instances
     """
-    _ = pytest.importorskip("morfeus")
     _ = pytest.importorskip("boss")
     # create train and test sets
     (

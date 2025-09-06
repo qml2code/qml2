@@ -1,6 +1,6 @@
 from ..jit_interfaces import empty_, jit_, prange_, sum_
 from ..math import lstsq_solve
-from ..multilevel_sorf.utils import get_numba_list
+from ..utils import get_numba_list
 
 
 @jit_

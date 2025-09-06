@@ -5,18 +5,6 @@ from numba.experimental import jitclass
 
 from ..jit_interfaces import concatenate_, ndarray_, sum_
 
-
-# For creating Numba lists.
-def get_numba_list(list_in=None):
-    if isinstance(list_in, typed.List):
-        return list_in
-    l = typed.List()
-    if list_in is not None:
-        for el in list_in:
-            l.append(el)
-    return l
-
-
 # For quickly printing parameters input objects and checking whether they are the same.
 # K.Karan: I am currently not aware of better ways to do it with Numba objects.
 closing_brackets = {"<": ">", "(": ")", "[": "]"}

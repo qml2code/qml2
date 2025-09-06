@@ -3,6 +3,8 @@
 from itertools import product
 from typing import Union
 
+import numba as nb
+
 from .basic_utils import canonical_atomtype, str_atom_corr
 from .data import NUCLEAR_CHARGE
 from .jit_interfaces import (
@@ -41,6 +43,19 @@ from .jit_interfaces import (
 
 
 # Some auxiliary functions.
+def get_numba_list(list_in=None):
+    """
+    Convert list to a Numba list
+    """
+    if isinstance(list_in, nb.typed.List):
+        return list_in
+    l = nb.typed.List()
+    if list_in is not None:
+        for el in list_in:
+            l.append(el)
+    return l
+
+
 def np_resize(np_arr, new_size):
     """
     Expand or cut a NumPy array.
@@ -117,6 +132,18 @@ def concatenate_wNone_(arr1, arr2):
         return arr2
     else:
         return concatenate_([arr1, arr2])
+
+
+def flatten_to_scalar(arr):
+    """
+    Mainly used to make functions of a scalar more convenient to use with BOSS.
+    """
+    while len(arr.shape) != 0:
+        if arr.shape[0] == 1:
+            arr = arr[0]
+        else:
+            return arr
+    return arr
 
 
 @jit_

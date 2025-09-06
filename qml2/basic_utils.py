@@ -3,6 +3,7 @@ import bz2
 import os
 import pickle
 import subprocess
+import traceback
 from copy import deepcopy
 from datetime import datetime
 
@@ -160,7 +161,7 @@ def fetch_package_data(filepath):
 
 
 def run(*cmd_args):
-    subprocess.run(list(cmd_args))
+    return subprocess.run(list(cmd_args))
 
 
 def copy_package_to(other_dir):
@@ -213,6 +214,8 @@ def mkdir(dir_name):
 
 # For going between nested dictionnary and classes (mainly appears in multilevel SORF routines)
 def recursive_class_dict(obj):
+    if isinstance(obj, list):
+        return [recursive_class_dict(el) for el in obj]
     if not hasattr(obj, "__dict__"):
         return obj
     output = {}
@@ -234,4 +237,33 @@ class ConvertedDict:
 def convert_dict_list(d: dict | list):
     if isinstance(d, list):
         return [convert_dict_list(el) for el in d]
-    return ConvertedDict(d)
+    if isinstance(d, dict):
+        return ConvertedDict(d)
+    return d
+
+
+class ExceptionRaisingFunc:
+    def __init__(self, ex, returned_exception_type=None):
+        self.exception_text = "\n".join(traceback.format_exception(ex))
+        if returned_exception_type is None:
+            returned_exception_type = type(ex)
+        self.returned_exception_type = returned_exception_type
+
+    def __call__(self, *args, **kwargs):
+        raise self.returned_exception_type(self.exception_text)
+
+
+def ExceptionRaisingClass(ex, returned_exception_type=None, add_attrs=None):
+    internal_func = ExceptionRaisingFunc(ex, returned_exception_type=returned_exception_type)
+
+    class OutputClass:
+        def __init__(self, *args, **kwargs):
+            internal_func(*args, **kwargs)
+
+        def __call__(self, *args, **kwargs):
+            internal_func(*args, **kwargs)
+
+    if add_attrs is not None:
+        for add_attr in add_attrs:
+            setattr(OutputClass, add_attr, OutputClass.__call__)
+    return OutputClass
