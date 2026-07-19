@@ -6,10 +6,81 @@ import sys
 import tempfile
 import warnings
 
-from .basic_utils import checked_environ_val, dump2pkl, loadpkl, run
-from .jit_interfaces import Pool_, multiprocessing_
+from .basic_utils import (
+    checked_environ_val,
+    dump2pkl,
+    loadpkl,
+    rep_numba_parallel_env_var_name,
+    run,
+)
+from .jit_interfaces import get_default_jit, multiprocessing_, numba_flag
 
 num_procs_name = "QML2_NUM_PROCS"
+
+# procedures for generating one multiprocessing pool and reusing it.
+global_mp_pool = None
+global_mp_pool_nprocs = None
+default_pool_start_method = "spawn"
+
+
+def change_default_pool_start_method(new_default_pool_start_method):
+    global default_pool_start_method
+    default_pool_start_method = new_default_pool_start_method
+
+
+def create_mp_pool(num_procs, pool_start_method=None):
+    if pool_start_method is None:
+        pool_start_method = default_pool_start_method
+    used_num_procs = default_num_procs(num_procs)
+    ctx = multiprocessing_.get_context(pool_start_method)
+    return ctx.Pool(used_num_procs), used_num_procs
+
+
+def get_global_mp_pool():
+    return global_mp_pool
+
+
+def check_get_global_mp_pool(num_procs, pool_start_method=None):
+    mp_pool = get_global_mp_pool()
+    if mp_pool is None:
+        mp_pool, _ = create_mp_pool(num_procs, pool_start_method=pool_start_method)
+    return mp_pool
+
+
+def close_temp_mp_pool(pool):
+    """
+    If `pool` is not the module's global pool close it.
+    """
+    if pool is not global_mp_pool:
+        pool.close()
+
+
+def destroy_global_mp_pool():
+    """
+    Destroy current global MP pool.
+    """
+    global global_mp_pool, global_mp_pool_nprocs
+    global_mp_pool.close()
+    global_mp_pool = None
+    global_mp_pool_nprocs = None
+
+
+def create_global_mp_pool(num_procs=None, pool_start_method=None):
+    """
+    Initialize a global MP pool reused by QML2 in all parallelized calculations.
+
+    Args:
+        num_procs (int): if not None defines number of child processes, otherwise `default_num_procs_val` is used (which, unless changed by `set_default_num_procs`, equals `multiprocessing.cpu_count`).
+    """
+    global global_mp_pool, global_mp_pool_nprocs
+    global_mp_pool, global_mp_pool_nprocs = create_mp_pool(
+        num_procs, pool_start_method=pool_start_method
+    )
+
+
+def get_global_mp_pool_nprocs():
+    return global_mp_pool_nprocs
+
 
 # By default the code will try occupying all cores with one process
 default_num_procs_val = multiprocessing_.cpu_count()
@@ -22,8 +93,8 @@ def set_default_num_procs(num_procs):
 
 
 def set_fixed_num_threads(fixed_num_threads):
-    global default_fixed_num_threads
-    default_fixed_num_threads = fixed_num_threads
+    global default_fixed_num_threads_val
+    default_fixed_num_threads_val = fixed_num_threads
 
 
 num_threads_var_names = [
@@ -51,7 +122,7 @@ def default_fixed_num_threads(fixed_num_threads=None):
 
 
 class ParallelHelper:
-    def __init__(self, func, other_args=(), other_kwargs={}):
+    def __init__(self, func, *other_args, **other_kwargs):
         self.func = func
         self.other_args = other_args
         self.other_kwargs = other_kwargs
@@ -61,23 +132,28 @@ class ParallelHelper:
 
 
 def embarrassingly_parallel_no_thread_fix(
-    func, array, other_args, other_kwargs={}, num_procs=None
+    func, array, other_args, other_kwargs={}, num_procs=None, pool_start_method=None
 ):
     if num_procs == 1:
         return [func(element, *other_args, **other_kwargs) for element in array]
     else:
-        # TODO: Make a global pool?
-        p = Pool_(default_num_procs(num_procs))
+        p = check_get_global_mp_pool(num_procs, pool_start_method=pool_start_method)
         output = p.map(
-            ParallelHelper(func, other_args=other_args, other_kwargs=other_kwargs),
+            ParallelHelper(func, *other_args, **other_kwargs),
             array,
         )
-        p.close()
+        close_temp_mp_pool(p)
         return output
 
 
 def embarrassingly_parallel(
-    func, array, other_args, other_kwargs={}, num_procs=None, fixed_num_threads=None
+    func,
+    array,
+    other_args,
+    other_kwargs={},
+    num_procs=None,
+    fixed_num_threads=None,
+    pool_start_method=None,
 ):
     """
     Find in parallel results of `[func(element, *other_args, **other_kwargs) for element in array]`. Additional keyword arguments are:
@@ -94,20 +170,33 @@ def embarrassingly_parallel(
             other_kwargs,
             num_procs=num_procs,
             fixed_num_threads=fixed_num_threads,
+            pool_start_method=pool_start_method,
         )
     else:
         return embarrassingly_parallel_no_thread_fix(
-            func, array, other_args, other_kwargs=other_kwargs, num_procs=num_procs
+            func,
+            array,
+            other_args,
+            other_kwargs=other_kwargs,
+            num_procs=num_procs,
+            pool_start_method=pool_start_method,
         )
 
 
-def create_func_exec(dump_filename, exec_scr_name, num_procs=None, fixed_num_threads=None):
+def create_func_exec(
+    dump_filename, exec_scr_name, num_procs=None, fixed_num_threads=None, pool_start_method=None
+):
     # subprocess.run seems to have issues running commands of the type "QML2_NUM_PROCS=20 python bla.py"
     # we therefore modify the variables inside the run script
+    if pool_start_method is None:
+        pool_start_method = default_pool_start_method
+
     contents = (
-        """
-import os
-os.environ['"""
+        f"""# This script was set up as part of a call to qml2.parallelization.embarrassingly_parallel. If the script crashed, please consult the error log for where it had been called. If the script is frozen, to recover where it was called from consider killing the corresponding process. The latter is done in Linux with:
+# pkill -9 {exec_scr_name}
+if __name__ == '__main__':
+\timport os
+\tos.environ['"""
         + num_procs_name
         + """']='"""
         + str(default_num_procs(num_procs=num_procs))
@@ -115,25 +204,28 @@ os.environ['"""
     )
     for thread_var in num_threads_var_names:
         contents += (
-            "os.environ['"
+            "\tos.environ['"
             + thread_var
             + "']='"
             + str(default_fixed_num_threads(fixed_num_threads=fixed_num_threads))
             + "'\n"
         )
     contents += (
-        """
-from qml2.basic_utils import loadpkl, dump2pkl
-from qml2.parallelization import embarrassingly_parallel_no_thread_fix
+        f"""
+\tos.environ['{rep_numba_parallel_env_var_name}']='1'
+\tfrom qml2.basic_utils import loadpkl, dump2pkl
+\tfrom qml2.parallelization import embarrassingly_parallel_no_thread_fix
 
-dump_filename='"""
+\tdump_filename='"""
         + dump_filename
         + """'
 
-executed=loadpkl(dump_filename)
+\texecuted=loadpkl(dump_filename)
 
-output=embarrassingly_parallel_no_thread_fix(executed["func"], executed["array"], executed["args"], other_kwargs=executed["other_kwargs"])
-dump2pkl(output, dump_filename)
+\toutput=embarrassingly_parallel_no_thread_fix(executed["func"], executed["array"], executed["args"], other_kwargs=executed["other_kwargs"], pool_start_method='"""
+        + pool_start_method
+        + """')
+\tdump2pkl(output, dump_filename)
 """
     )
     output = open(exec_scr_name, "w")
@@ -142,23 +234,36 @@ dump2pkl(output, dump_filename)
 
 
 def create_run_func_exec(
-    func, array, other_args, other_kwargs, num_procs=None, fixed_num_threads=None
+    func,
+    array,
+    other_args,
+    other_kwargs,
+    num_procs=None,
+    fixed_num_threads=None,
+    pool_start_method=None,
 ):
     tmpdir = tempfile.TemporaryDirectory(dir=".", delete=False)
 
-    dump_filename = tmpdir.name + "/temp_dump.pkl"
+    dump_filename = tmpdir.name + "/temp_embarrassingly_parallel_dump.pkl"
 
-    exec_scr_name = tmpdir.name + "/temp_scr.py"
+    exec_scr_name = tmpdir.name + "/temp_embarrassingly_parallel_scr.py"
 
     dump2pkl(
         {"func": func, "array": array, "args": other_args, "other_kwargs": other_kwargs},
         dump_filename,
     )
     create_func_exec(
-        dump_filename, exec_scr_name, num_procs=num_procs, fixed_num_threads=fixed_num_threads
+        dump_filename,
+        exec_scr_name,
+        num_procs=num_procs,
+        fixed_num_threads=fixed_num_threads,
+        pool_start_method=pool_start_method,
     )
-    res = run(sys.executable, exec_scr_name)
-    assert res.returncode == 0, f"Parallel execution failed, see: {tmpdir.name}"
+    res = run(sys.executable, exec_scr_name, capture_output=True)
+    assert res.returncode == 0, (
+        f"Parallel execution failed, can be reproduced with: {tmpdir.name}\nFull error message:\n"
+        + res.stderr.decode()
+    )
     output = loadpkl(dump_filename)
     tmpdir.cleanup()
     return output
@@ -205,7 +310,7 @@ class ParallelizedAttribute:
         list_obj,
         *args,
         num_procs=None,
-        fixed_num_threads=default_fixed_num_threads_val,
+        fixed_num_threads=None,
         test_mode=False,
         serial=False,
         **kwargs,
@@ -215,15 +320,22 @@ class ParallelizedAttribute:
                 list_obj[i] = self.processed_attribute(el, *args, **kwargs)
             return
         if test_mode:
-            dnum_procs = default_num_procs(num_procs)
-            dfixed_num_threads = default_fixed_num_threads(fixed_num_threads)
-            if dnum_procs == 1 and dfixed_num_threads == 1:
-                warnings.warn(
-                    "WARNING: cannot check whether Numba parallelization works correctly; check the number of CPUs available on your machine as well as values of parallelization-related environmental variables."
-                )
+            if get_default_jit() == numba_flag:
+                dnum_procs = default_num_procs(num_procs)
+                dfixed_num_threads = default_fixed_num_threads(fixed_num_threads)
+                if dfixed_num_threads is None:
+                    dfixed_num_threads = 1
+                if dnum_procs == 1 and dfixed_num_threads == 1:
+                    warnings.warn(
+                        "WARNING: cannot check whether Numba parallelization works correctly; check the number of CPUs available on your machine as well as values of parallelization-related environmental variables."
+                    )
+                else:
+                    num_procs = default_num_procs(num_procs) // 2
+                    fixed_num_threads = default_fixed_num_threads(fixed_num_threads) * 2
             else:
-                num_procs = default_num_procs(num_procs) // 2
-                fixed_num_threads = default_fixed_num_threads(fixed_num_threads) * 2
+                warnings.warn("WARNING: multiprocessing not tested with Torch!")
+                num_procs = 1
+                fixed_num_threads = None
 
         new_vals = embarrassingly_parallel(
             self.processed_attribute,

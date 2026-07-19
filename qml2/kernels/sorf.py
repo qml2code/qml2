@@ -10,6 +10,7 @@ from ..dimensionality_reduction import (
 )
 from ..jit_interfaces import (
     OptionalGenerator_,
+    abs_,
     array_jittable_,
     bool_,
     cos_,
@@ -43,12 +44,34 @@ def allow_sorf_numba_parallelization():
 
 # For creating SORF.
 @jit_
+def rand_sign_polynom(r):
+    """
+    Function that looks like sign(r-0.5) for r in [0,1], but is continuous. Used instead of sign(r-0.5) in test mode to make tests more stable w.r.t. RNG input.
+
+    Arguments:
+        r (float) - typically a randomly chosen value in [0, 1].
+    """
+    d = 0.5 - r
+    return (16 * (0.5 - abs_(d)) ** 4 - 1) * sign_(d)
+
+
+@jit_
+def gen_rand_signs(output_shape, rng=None, test_mode=False):
+    rand_values = random_array_from_rng_(output_shape, rng=rng)
+    if test_mode:
+        return rand_sign_polynom(rand_values)
+    else:
+        return sign_(rand_values - 0.5)
+
+
+@jit_
 def create_sorf_matrices(
     nfeature_stacks: int_,
     ntransforms: int_,
     init_size: int_,
     pi_: dim0float_array_ = pi_,
     rng: OptionalGenerator_ = None,
+    test_mode: bool = False,
 ) -> Tuple[ndarray_, ndarray_]:
     """
     Create biases and diagonal elements appearing in the SORF expression.
@@ -59,8 +82,8 @@ def create_sorf_matrices(
     rng (numpy.random.Generator or None) - if not None is used to create output arrays; otherwise numpy.random RNG is used.
     """
     biases = random_array_from_rng_((nfeature_stacks, init_size), rng=rng) * 2 * pi_
-    sorf_diags = sign_(
-        random_array_from_rng_((nfeature_stacks, ntransforms, init_size), rng=rng) - 0.5
+    sorf_diags = gen_rand_signs(
+        (nfeature_stacks, ntransforms, init_size), rng=rng, test_mode=test_mode
     )
     return biases, sorf_diags
 
@@ -73,6 +96,7 @@ def create_sorf_matrices_diff_species(
     init_size: int,
     pi_: dim0float_array_ = pi_,
     rng: OptionalGenerator_ = None,
+    test_mode: bool = False,
 ) -> Tuple[ndarray_, ndarray_]:
     """
     Create biases and diagonal elements appearing in the SORF expression.
@@ -85,8 +109,8 @@ def create_sorf_matrices_diff_species(
     """
 
     biases = random_array_from_rng_((nfeature_stacks, nspecies, init_size), rng=rng) * 2 * pi_
-    sorf_diags = sign_(
-        random_array_from_rng_((nfeature_stacks, nspecies, ntransforms, init_size), rng=rng) - 0.5
+    sorf_diags = gen_rand_signs(
+        (nfeature_stacks, nspecies, ntransforms, init_size), rng=rng, test_mode=test_mode
     )
     return biases, sorf_diags
 
@@ -207,6 +231,7 @@ def generate_sorf_processed_input(
     nmols = reduced_scaled_representations.shape[0]
     nfeatures = kernel.shape[1]
     assert nfeature_stacks * init_size == nfeatures
+    assert kernel.shape[0] == nmols
 
     for feature_stack in prange_(nfeature_stacks):
         temp_red_reps = empty_((init_size,))

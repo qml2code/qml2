@@ -4,19 +4,29 @@ Code repo for convenient usage of methods developed in the [`chemspacelab`](http
 
 ## :wrench: Installation
 
+**WARNING:** As of 2025.09, due to conflict of several of the code dependencies we recommend only using it on Python 3.12.
+
 Install with:
 
    ```bash
    pip install .
    ```
-or, if `makefile` is installed,
+If a qml2 installation is already present, we recommend uninstalling it first via
+
+```bash
+pip uninstall qml2
+```
+to make sure the cache of Numba-compiled functions is cleared. The two actions can be done together in a single command if `makefile` is installed with
 
    ```bash
    make install
    ```
+
 Some parts of the code depend on additional dependencies that can be installed with the corresponding optional dependecies flag. The three defined for this package are
 
 - `orb_ml` - for FJK (machine learning from orbital information).
+
+- `xtb` - use [`tblite`](https://github.com/tblite/tblite) to combine orbital representations with xTB calculations.
 
 - `models` - for hyperparameter optimization procedures in `qml2.models` and `qml2.multilevel_sorf`.
 
@@ -66,7 +76,7 @@ This will create `manual.html` file that can be opened with an Internet browser.
 
 `NUMBA_NUM_THREADS` - since the code is written in Numba OpenMP parallelization is mostly controlled via this variable.
 
-`QML2_NUM_PROCS` - number of processes spawned by parts of the code parallelized via `python.multiprocessing` (training set representations in model-related classes, `pyscf` calculations made by `OML_Compound_list` attribute calls). For limiting number of OpenMP threads spawned in turn by these processes use suppress options (such as `KRRModel` class's `training_reps_suppress_openmp` option). Also see `parallelization.set_default_num_procs`.
+`QML2_DEBUG` - set as `1` to compile Numba routines inside QML2 with debug info.
 
 `QML2_NUM_PROCS` - number of processes spawned by parts of the code parallelized via `python.multiprocessing` (training set representations in model-related classes, `pyscf` calculations made by `OML_Compound_list` attribute calls). For limiting number of OpenMP threads spawned in turn by these processes use suppress options (such as `KRRModel` class's `training_reps_suppress_openmp` option). Also see `parallelization.set_default_num_procs`.
 
@@ -74,6 +84,7 @@ This will create `manual.html` file that can be opened with an Internet browser.
 
 `QML2_AVOID_SORF_NUMBA_PARALLELIZATION` - setting this environmental variable to `1` disables Numba parallelization over feature vectors for SORF routines in `qml2.kernels.sorf` and `qml2.kernels.gradient_sorf` (also referred to in the corresponding `qml2.models` classes). Helps if reductors are used in systems where Numba and Numpy try to parallelize simultaneously (see `QML2_AVOID_NUMBA_NUMPY_PARALLELIZATION`).
 
+`QML2_NUMBA_REP_PARALLELIZATION` - setting this environmental variable to `1` enables Numba parallelization of representation functions (e.g. w.r.t. atoms). Default is `0`.
 
 ### Experimental
 

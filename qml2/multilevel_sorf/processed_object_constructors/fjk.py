@@ -1,5 +1,5 @@
-from ...jit_interfaces import all_, array_, concatenate_, dint_, empty_
-from ...utils import get_element_ids_from_sorted, get_sorted_elements
+from ...jit_interfaces import all_, array_, concatenate_, dint_, empty_, unique_
+from ...utils import get_element_ids_from_sorted
 from ..base_constructors import (
     get_datatype,
     get_datatype2dict,
@@ -23,12 +23,6 @@ except ModuleNotFoundError as ex:
     OML_Slater_pairs = ExceptionRaisingClass(ex)
     default_OML_rep_params = None
 
-"""
-FJK Compound is converted into a datatype where:
-1. each atomic contribution to a localized orbital is given a vector.
-2. atomic contributions are grouped into weighted lists that represent a localized orbital
-3. a compound is represented by a weighed list of localized orbitals.
-"""
 orb_rep_def = ["array_2D", "rhos"]
 comp_rep_def = orb_rep_def + ["list", "rhos"]
 slater_pairs_rep_def = comp_rep_def + ["list"]
@@ -48,14 +42,18 @@ slater_pairs_dict_list2reps = get_transform_list_dict2datatype(slater_pairs_rep_
 
 def fjk_rep_component_bounds(oml_rep_params=default_OML_rep_params):
     max_angular_momentum = oml_rep_params.max_angular_momentum
-    if max_angular_momentum == 0:
-        nregions = 3  # for F, J, and K matrices
-        lb_mat_range = 0
-        lb_mat_id = 0
-    else:
+    distribution_component_present = not (
+        max_angular_momentum == 0 or oml_rep_params.odf_coup_mats
+    )
+    if distribution_component_present:
         nregions = 4  # + angular moment distribution
         lb_mat_range = max_angular_momentum
         lb_mat_id = 1
+    else:
+        nregions = 3  # for F, J, and K matrices; or overlap, destiny, and Fock matrices
+        lb_mat_range = 0
+        lb_mat_id = 0
+
     num_ang_mom_vals = max_angular_momentum + 1
     bounds = empty_((nregions, 2), dtype=dint_)
     for mat_id in range(3):
@@ -65,7 +63,7 @@ def fjk_rep_component_bounds(oml_rep_params=default_OML_rep_params):
         bounds[mat_id + lb_mat_id, 0] = lb_mat_range
         bounds[mat_id + lb_mat_id, 1] = ub_mat_range
         lb_mat_range = ub_mat_range
-    if max_angular_momentum != 0:
+    if distribution_component_present:
         bounds[0, 0] = 0
         bounds[0, 1] = max_angular_momentum
     return bounds
@@ -91,6 +89,13 @@ def processed_orb_rep(orb_rep: OML_orb_rep, local_representations=None):
 
 class FJKRepresentationCalc:
     def __init__(self, oml_rep_params=default_OML_rep_params, local_representation_processor=None):
+        """
+        Converts an OML Compound with FJK representation into a datatype where:
+        1. each atomic contribution to a localized orbital is given a vector.
+        2. atomic contributions are grouped into weighted lists that represent a localized orbital
+        3. a compound is represented by a weighed list of localized orbitals.
+        """
+
         self.oml_rep_params = oml_rep_params
         self.local_representation_processor = local_representation_processor
         self.local_rep_added = self.local_representation_processor is not None
@@ -215,10 +220,13 @@ class FJKdnRepresentationCalc(FJKRepresentationCalc):
         representation_function_kwargs={},
         possible_nuclear_charges=array_([1, 6, 7, 8, 16], dtype=dint_),
     ):
+        """
+        Same as FJKRepresentationCalc, but the atomic component kernel elements contain delta function.
+        """
         self.oml_rep_params = oml_rep_params
         self.representation_function = representation_function
         self.representation_function_kwargs = representation_function_kwargs
-        self.sorted_elements = get_sorted_elements(possible_nuclear_charges)
+        self.sorted_elements = unique_(possible_nuclear_charges)
         self.local_rep_added = self.representation_function is not None
 
     def append_orb_representations(self, list_in, rho_list, compound: OML_Compound):
@@ -226,7 +234,7 @@ class FJKdnRepresentationCalc(FJKRepresentationCalc):
             local_representations = self.representation_function(
                 compound.nuclear_charges,
                 compound.coordinates,
-                **self.representation_function_kwargs
+                **self.representation_function_kwargs,
             )
         else:
             local_representations = None

@@ -34,9 +34,9 @@ from .jit_interfaces import (
     optional_ndarray_,
     prange_,
     searchsorted_,
-    sort_,
     square_,
     sum_,
+    unique_,
     where_,
     zeros_,
 )
@@ -111,22 +111,6 @@ def int_in_sorted(int_val: int, sorted_int_arr: ndarray_):
     return bool(sorted_int_arr[i] == int_val)
 
 
-@jit_
-def get_sorted_elements(ncharges: ndarray_, dint_: dtype_ = dint_):
-    output = zeros_((1,), dtype=dint_)
-    output[0] = ncharges[0]
-    natoms = ncharges.shape[0]
-    for i in range(1, natoms):
-        nc = int(ncharges[i])
-        if not int_in_sorted(nc, output):
-            cur_nelements = output.shape[0]
-            new_output = zeros_((int(cur_nelements + 1),), dtype=dint_)
-            new_output[:cur_nelements] = output[:cur_nelements]
-            new_output[-1] = nc
-            output = sort_(new_output)
-    return output
-
-
 def concatenate_wNone_(arr1, arr2):
     if arr1 is None:
         return arr2
@@ -160,7 +144,7 @@ def check_allocation(
 def searchsorted_wexception(sorted_int_arr: ndarray_, int_val: dim0int_array_):
     found = searchsorted_(sorted_int_arr, int_val)
     if sorted_int_arr[found] != int_val:
-        raise Exception
+        raise Exception(f"Failed to find {int_val} in {sorted_int_arr}!")
     return found
 
 
@@ -178,6 +162,10 @@ def get_element_ids_from_sorted(
     for i in prange_(natoms):
         output[i] = searchsorted_wexception(sorted_elements, ncharges[i])
     return output
+
+
+def get_possible_nuclear_charges(all_nuclear_charges):
+    return unique_(concatenate_(all_nuclear_charges))
 
 
 @jit_

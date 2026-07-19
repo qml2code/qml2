@@ -152,7 +152,7 @@ class PseudoMF:
 class PseudoMole:
     def __init__(self, ovlp_mat, atom_ao_ranges, angular_momenta):
         # Relevant data
-        self.natm = ovlp_mat.shape[0]
+        self.natm = len(atom_ao_ranges)
         self.ovlp_mat = ovlp_mat
         self.atom_ao_ranges = atom_ao_ranges
         self.angular_momenta = angular_momenta

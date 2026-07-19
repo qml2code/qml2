@@ -75,7 +75,12 @@ class _jit_:
 
 
 def get_jit_keywords(
-    used_jit_name=None, skip=False, numba_parallel=False, numba_fastmath=True, numba_nopython=True
+    used_jit_name=None,
+    skip=False,
+    numba_parallel=False,
+    numba_fastmath=True,
+    numba_nopython=True,
+    numba_cache=False,
 ):
     kws = {}
     for var_name, var in locals().items():

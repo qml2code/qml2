@@ -11,6 +11,7 @@ from ..jit_interfaces import (
     dot_,
     empty_,
     exp_,
+    isnan_,
     log_,
     mean_,
 )
@@ -18,7 +19,6 @@ from ..kernels.kernels import construct_gaussian_kernel
 from ..math import cho_solve
 from ..optimizers import global_optimize_1D
 from ..parallelization import embarrassingly_parallel
-from ..representations import generate_coulomb_matrix, generate_fchl19
 from ..utils import check_allocation, flatten_to_scalar, get_numba_list
 from .hyperparameter_init_guesses import vector_std
 from .hyperparameter_optimization import KRRLeaveOneOutL2regOpt
@@ -35,18 +35,18 @@ class KRRModel(Module_):
         kernel_constructor=construct_gaussian_kernel,
         additional_kernel_constructor_kwargs={},
         kernel_kwargs={},
-        representation_function=generate_coulomb_matrix,
+        representation_function=None,
         rep_kwargs={},
         sigma=None,
         l2reg=None,
         l2reg_diag_ratio=None,
-        training_reps_suppress_openmp=True,
+        training_reps_suppress_openmp=False,
         shift_quantities=False,
         ln_l2reg_diag_ratio_bounds=[-24.0, 0.0],
         ln_sigma_shift_bounds=[-10.0, 10.0],
         l2reg_total_iterpts=32,
         sigma_total_iterpts=32,
-        test_mode=False,
+        hyp_1D_opt_method="boss",
     ):
         """
         KRR model using global kernels.
@@ -57,18 +57,18 @@ class KRRModel(Module_):
             kernel_constructor : if kernel_function is None, it (along with kernel_function_symmetric) is constructed with kernel_constructor, e.g. `qml2.kernels.construct_gaussian_kernel`. (K.Karan.: was introduced to prevent accidentally using kernel_function and kernel_function_symmetric that do not match; might be excessive.)
             additional_kernel_constructor_kwargs (dict): keyword arguments used by kernel_constructor for kernel functions.
             kernel_kwargs (dict): keyword arguments used by kernel_function and kernel_function_symmetric.
-            representation_function : function for calculating global representation.
+            representation_function : if not None defines function used to calculate molecular representations; otherwise (which is default) `representation` attribute for each `Compound` class instance is used.
             rep_kwargs : keyword arguments used by the representation function.
             sigma (float or None): sigma hyperparameter.
             l2reg (float or None): l2 regularization hypermarameter (also known as lambda).
             l2reg_diag_ratio (float or None): ratio of l2reg and average diagonal matrix of the training kernel matrix, used to recover l2reg if the latter is None. (Introduced mainly for KRRLocalModel.)
-            training_reps_suppress_openmp (bool): if True suppress Numba parallelization inside representation function when training compounds' representations are calculated for training.
+            training_reps_suppress_openmp (bool): if True suppress OpenMP parallelization inside representation function when training compounds' representations are calculated (default is False). (Suppression is done by dumping all data of interest into a pickle file and processing it in a child environment with OpenMP disabled.)
             shift_quantities (bool): if True shift quantities by their mean for training and prediction.
             ln_l2reg_diag_ratio_bounds : bounds in which logarithm of l2reg_diag_ratio is optimized.
             ln_sigma_shift_bounds : bounds in which logarithm of sigma is optimized, shifted by logarithm of initial guess.
             l2reg_total_iterpts (int): total number of function calls as l2reg is optimized (e.g. with BOSS).
             sigma_total_iterpts (int): total number of function calls as sigma is optimized (e.g. with BOSS).
-            test_mode (bool): disable parts of hyperparameter optimization that are random (used for tests).
+            hyp_1D_opt_method (str): method for 1D optimization used for hyperparameters (default is "boss" - BOSS optimization, also supports "grid").
         """
         Module_.__init__(self)
         self.basic_init(
@@ -83,7 +83,7 @@ class KRRModel(Module_):
             ln_sigma_shift_bounds=ln_sigma_shift_bounds,
             l2reg_total_iterpts=l2reg_total_iterpts,
             sigma_total_iterpts=sigma_total_iterpts,
-            test_mode=test_mode,
+            hyp_1D_opt_method=hyp_1D_opt_method,
         )
         # kernel function
         self.init_kernel_functions(
@@ -97,18 +97,18 @@ class KRRModel(Module_):
 
     def basic_init(
         self,
-        representation_function=generate_coulomb_matrix,
+        representation_function=None,
         rep_kwargs={},
         sigma=None,
         l2reg=None,
         l2reg_diag_ratio=None,
-        training_reps_suppress_openmp=True,
+        training_reps_suppress_openmp=False,
         shift_quantities=False,
         ln_l2reg_diag_ratio_bounds=[-24.0, 0.0],
         ln_sigma_shift_bounds=[-10.0, 10.0],
         l2reg_total_iterpts=32,
         sigma_total_iterpts=32,
-        test_mode=False,
+        hyp_1D_opt_method="boss",
     ):
         # hyperparameters
         self.sigma = sigma
@@ -123,7 +123,7 @@ class KRRModel(Module_):
         self.representation_function = representation_function
         self.rep_kwargs = rep_kwargs
         self.training_reps_suppress_openmp = training_reps_suppress_openmp
-        self.test_mode = test_mode
+        self.hyp_1D_opt_method = hyp_1D_opt_method
 
         self.init_basic_arrays()
 
@@ -165,7 +165,6 @@ class KRRModel(Module_):
         self.training_quantities = None
         self.training_representations = None
         self.training_nuclear_charges = None
-        self.training_representations = None
 
     def init_shifts(self):
         self.intensive_shift_val = None
@@ -179,6 +178,8 @@ class KRRModel(Module_):
         return self.get_rep(*ncharges_coords_tuple)
 
     def compound2rep(self, comp: Compound):
+        if self.representation_function is None:
+            return comp.representation
         return self.get_rep(comp.nuclear_charges, comp.coordinates)
 
     def get_training_kernel(self, sigma=None, out=None):
@@ -206,23 +207,45 @@ class KRRModel(Module_):
         return vector_std(self.training_representations)
 
     def combine_representations(self, representations_list):
-        return array_(representations_list)
+        output = array_(representations_list, dtype=float)
+        if isnan_(output).any():
+            raise ValueError
+        return output
 
-    def calc_all_representations(self, compounds=None, suppress_openmp=True, num_procs=None):
+    def calc_all_representations_separate(
+        self, compounds=None, suppress_openmp=False, num_procs=None
+    ):
         if compounds is None:
             compounds = self.training_compounds
+        if self.representation_function is None:
+            return [comp.representation for comp in compounds]
         if suppress_openmp:
             fixed_num_threads = 1
         else:
             fixed_num_threads = None
-        all_representations_list = embarrassingly_parallel(
+        return embarrassingly_parallel(
             self.compound2rep,
             compounds,
             (),
             fixed_num_threads=fixed_num_threads,
             num_procs=num_procs,
         )
-        return self.combine_representations(all_representations_list)
+
+    def calc_all_representations(self, compounds=None, suppress_openmp=False, num_procs=None):
+        all_representations_list = self.calc_all_representations_separate(
+            compounds=compounds, suppress_openmp=suppress_openmp, num_procs=num_procs
+        )
+
+        try:
+            combined_representations = self.combine_representations(all_representations_list)
+        except ValueError as ex:
+            if self.representation_function is None:
+                if None in all_representations_list:
+                    raise Exception(
+                        "Either both model instance's representation function and compounds' representation attribute were undefined, or there was NaN in the input vectors. Aborting."
+                    )
+            raise ex
+        return combined_representations
 
     def adjust_init_quant_shift(self):
         self.intensive_shift_val = mean_(self.training_quantities)
@@ -289,22 +312,12 @@ class KRRModel(Module_):
             self.training_quantities,
             ln_l2reg_diag_ratio_bounds=self.ln_l2reg_diag_ratio_bounds,
             total_iterpts=self.l2reg_total_iterpts,
-            test_mode=self.test_mode,
+            opt_method=self.hyp_1D_opt_method,
         )
 
-    def optimize_hyperparameters(self):
-        """
-        Use BOSS to optimize the sigma hyperparameter.
-        """
-        sigma_opt_func = self.get_sigma_opt_func()
-        sigma_init_guess = self.get_sigma_init_guess()
-        min_ln_sigma = global_optimize_1D(
-            sigma_opt_func,
-            self.ln_sigma_shift_bounds + log_(sigma_init_guess),
-            total_iterpts=self.sigma_total_iterpts,
-            test_mode=self.test_mode,
-            opt_name="sigma_opt",
-        )
+    def finalize_l2_reg_rel_diag(self, sigma_opt_func, min_ln_sigma=None):
+        if min_ln_sigma is None:
+            min_ln_sigma = log_(self.sigma)
         min_ln_l2reg_rel_diag, minimized_l2reg_loss = sigma_opt_func(min_ln_sigma, min_output=True)
         min_l2reg_rel_diag = exp_(min_ln_l2reg_rel_diag)
         # just in case, check the l2reg BOSS found actually corresponds to a numerically stable kernel matrix
@@ -314,8 +327,32 @@ class KRRModel(Module_):
                 break
             except LinAlgError_:
                 min_l2reg_rel_diag *= 2
-        self.sigma = exp_(min_ln_sigma)
         self.l2reg_diag_ratio = min_l2reg_rel_diag
+
+    def optimize_hyperparameters(self):
+        """
+        Use BOSS to optimize the sigma hyperparameter. l2 regularization is optimized separately for each sigma considered.
+        """
+        sigma_opt_func = self.get_sigma_opt_func()
+        sigma_init_guess = self.get_sigma_init_guess()
+        min_ln_sigma = global_optimize_1D(
+            sigma_opt_func,
+            self.ln_sigma_shift_bounds + log_(sigma_init_guess),
+            total_iterpts=self.sigma_total_iterpts,
+            opt_method=self.hyp_1D_opt_method,
+            opt_name="sigma_opt",
+        )
+        self.sigma = exp_(min_ln_sigma)
+        self.finalize_l2_reg_rel_diag(sigma_opt_func, min_ln_sigma)
+
+    def optimize_hyperparameters_short(self):
+        """
+        Assign sigma parameter from the initial guess. If l2reg_diag_ratio is undefined optimize it for the given sigma.
+        """
+        self.sigma = self.get_sigma_init_guess()
+        if self.l2reg_diag_ratio is None:
+            sigma_opt_func = self.get_sigma_opt_func()
+            self.finalize_l2_reg_rel_diag(sigma_opt_func)
 
     def get_alphas(self, train_kernel, rhs=None, solver=cho_solve, **solver_kwargs):
         l2reg = self.l2reg
@@ -327,15 +364,21 @@ class KRRModel(Module_):
         self.alphas = solver(train_kernel, rhs, l2reg=l2reg, **solver_kwargs)
         return self.alphas
 
+    def calc_alphas(self, **kwargs):
+        train_kernel = self.get_training_kernel()
+        self.get_alphas(train_kernel, **kwargs)
+
     def fit(self, **kwargs):
         self.assign_training_set(**kwargs)
-        train_kernel = self.get_training_kernel()
-        self.get_alphas(train_kernel)
+        self.calc_alphas()
 
-    def train(self, **kwargs):
+    def train(self, short_hyperparam_opt=False, **kwargs):
         self.assign_training_set(**kwargs)
-        self.optimize_hyperparameters()
-        self.fit(**kwargs)
+        if short_hyperparam_opt:
+            self.optimize_hyperparameters_short()
+        else:
+            self.optimize_hyperparameters()
+        self.calc_alphas()
 
     def get_shifted_prediction(self, prediction, **kwargs):
         if self.shift_quantities:
@@ -353,13 +396,13 @@ class KRRModel(Module_):
             self.training_representations,
             representations,
             self.sigma,
-            self.temp_kernel[:, :nmols],
+            self.temp_kernel[: self.ntrain, :nmols],
             **self.kernel_kwargs,
         )
         return self.predict_from_kernel(nmols=nmols)
 
     def predict_from_compound(self, compound: Compound):
-        return self(compound.nuclear_charges, compound.coordinates)
+        return self.predict_from_compounds([compound], suppress_openmp=False, num_procs=1)[0]
 
     def __call__(self, nuclear_charges, coords):
         representation = self.get_rep(nuclear_charges, coords)
@@ -367,7 +410,7 @@ class KRRModel(Module_):
             representation.reshape((1, representation.shape[0]))
         )[0]
 
-    def predict_from_compounds(self, compounds, suppress_openmp=True, num_procs=None):
+    def predict_from_compounds(self, compounds, suppress_openmp=False, num_procs=None):
         representations = self.calc_all_representations(
             compounds, suppress_openmp=suppress_openmp, num_procs=num_procs
         )
@@ -381,6 +424,18 @@ class KRRModel(Module_):
 
         dump2pkl(self, filename)
 
+    def intermediate_learning_curve_printout(
+        self, training_set_size, isubset, predictions=None, test_quantities=None
+    ):
+        print_str = f"Training set size: {training_set_size}, training subset id: {isubset}"
+        if predictions is not None and test_quantities is not None:
+            assert (
+                predictions.shape == test_quantities.shape
+            ), "prediction and test quantity arrays should be of the same shape!"
+            mae = MAE()(test_quantities - predictions)
+            print_str += f", MAE: {mae}"
+        print(print_str)
+
     # TODO can be combined with qml2.multilevel_sorf.models code too?
     def learning_curve_predictions(
         self,
@@ -392,7 +447,8 @@ class KRRModel(Module_):
         rng=None,
         hyperparameter_reoptimization=True,
         num_procs=None,
-        suppress_openmp=True,
+        suppress_openmp=False,
+        test_quantities=None,
     ):
         """
         For current hyperparameter values calculate all predictions necessary to build a learning curve.
@@ -411,8 +467,8 @@ class KRRModel(Module_):
             rng (numpy.random RNG or None): RNG used during shuffling of training set. If None (default), an RNG is generated by the code.
             hyperparameter_reoptimization (bool): if True perform a separate hyperparameter optimization for each training set subset. If False (default), hyperparameters currently initialized in the model are used.
             num_procs (int or None): if not None defines the number of processes spawned to calculate molecular representations.
-            suppress_openmp (bool): whether to suppress OpenMP in child processes calculating representations.
-
+            suppress_openmp (bool): whether to suppress OpenMP in child processes calculating representations (default is False). (Suppression is done by dumping all data of interest into a pickle file and processing it in a child environment with OpenMP disabled.)
+            test_quantities (numpy.array): if not None defines exact quantities of the test set. Only used for intermediate printouts.
         Returns:
             For each training set subset numpy.array of predictions is generated, which is combined into lists by subset size. A list of these lists is returned.
         """
@@ -458,6 +514,12 @@ class KRRModel(Module_):
                     test_compounds, num_procs=num_procs, suppress_openmp=suppress_openmp
                 )
                 subset_predictions.append(predictions)
+                self.intermediate_learning_curve_printout(
+                    training_set_size,
+                    isubset,
+                    predictions=predictions,
+                    test_quantities=test_quantities,
+                )
             all_predictions.append(subset_predictions)
         return all_predictions
 
@@ -473,7 +535,7 @@ class KRRModel(Module_):
         lc_error_loss_function=MAE(),
         hyperparameter_reoptimization=True,
         num_procs=None,
-        suppress_openmp=True,
+        suppress_openmp=False,
     ):
         """
         Make a learning curve with errors.
@@ -491,7 +553,7 @@ class KRRModel(Module_):
             lc_error_loss_function (function): loss function of prediction errors used in the learning curve. Default is Mean Absolute Error.
             hyperparameter_reoptimization (bool): if True perform a separate hyperparameter optimization for each training set subset. If False (default), hyperparameters currently initialized in the model are used.
             num_procs (int or None): if not None defines the number of processes spawned to calculate molecular representations.
-            suppress_openmp (bool): whether to suppress OpenMP in child processes calculating representations.
+            suppress_openmp (bool): whether to suppress OpenMP in child processes calculating representations (default is False). (Suppression is done by dumping all data of interest into a pickle file and processing it in a child environment with OpenMP disabled.)
 
         Returns:
             Tuple of `(means, stds)`, both members Numpy arrays, `means` containing mean values of loss function for a given training set size, `stds` containing standard deviations of the loss function among subsets of the same size.
@@ -506,6 +568,7 @@ class KRRModel(Module_):
             hyperparameter_reoptimization=hyperparameter_reoptimization,
             num_procs=num_procs,
             suppress_openmp=suppress_openmp,
+            test_quantities=test_quantities,
         )
         return learning_curve_from_predictions(
             all_predictions,
@@ -517,7 +580,6 @@ class KRRModel(Module_):
 class KRRLocalModel(KRRModel):
     def __init__(
         self,
-        representation_function=generate_fchl19,
         local_dn=True,
         possible_nuclear_charges=None,
         **other_kwargs,
@@ -538,9 +600,9 @@ class KRRLocalModel(KRRModel):
             "local": True,
             "local_dn": local_dn,
         }
-        self.local_dn = True
+        self.local_dn = local_dn
         self.possible_nuclear_charges = possible_nuclear_charges
-        super().__init__(**other_kwargs, representation_function=representation_function)
+        super().__init__(**other_kwargs)
 
     def adjust_init_quant_shift(self):
         assert self.possible_nuclear_charges is not None
@@ -633,7 +695,9 @@ class KRRLocalModel(KRRModel):
         if self.local_dn:
             combined_query_nuclear_charges = concatenate_(all_nuclear_charges)
             args = (*args, self.combined_training_nuclear_charges, combined_query_nuclear_charges)
-        self.kernel_function_asym(*args, self.sigma, self.temp_kernel, **self.kernel_kwargs)
+        self.kernel_function_asym(
+            *args, self.sigma, self.temp_kernel[: self.ntrain, :nmols], **self.kernel_kwargs
+        )
         return self.predict_from_kernel(nmols=nmols, all_nuclear_charges=all_nuclear_charges)
 
     def __call__(self, nuclear_charges, coords):

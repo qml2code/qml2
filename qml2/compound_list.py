@@ -7,6 +7,7 @@ inherited_attribute_names = [
     "generate_fchl19",
     "generate_slatm",
     "generate_cmbdf",
+    "generate_rep_from_func",
 ]
 
 

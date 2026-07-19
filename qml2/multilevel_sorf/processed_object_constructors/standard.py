@@ -1,11 +1,11 @@
 from numba import typed
 
 from ...compound import Compound
-from ...jit_interfaces import all_, array_, concatenate_, dint_
-from ...parallelization import embarrassingly_parallel
+from ...jit_interfaces import all_, array_, concatenate_, dint_, unique_
+from ...parallelization import default_num_procs, embarrassingly_parallel
 from ...representations import generate_coulomb_matrix, generate_fchl19
 from ...representations.element_representations import period_valence_representation
-from ...utils import get_element_ids_from_sorted, get_sorted_elements
+from ...utils import get_element_ids_from_sorted
 from ..base_constructors import get_dict2datatype, get_transform_list_dict2datatype
 
 el_aug_rep_def = ["array_1D", "element_id", "list"]
@@ -23,15 +23,23 @@ class RepresentationCalc:
         self.representation_function_kwargs = representation_function_kwargs
 
     def get_representation(self, compound: Compound, **additional_kwargs):
+        if self.representation_function is None:
+            assert (
+                compound.representation is not None
+            ), "Attempting recovery of uninitialized representation!"
+            return compound.representation
         return self.representation_function(
             compound.nuclear_charges,
             compound.coordinates,
             **self.representation_function_kwargs,
-            **additional_kwargs
+            **additional_kwargs,
         )
 
     def calc_with_component_bounds(self, compound: Compound, **additional_kwargs):
         pass
+
+    def calc_rep(self, compound: Compound, **additional_kwargs):
+        return self.calc_with_component_bounds(compound, **additional_kwargs)[0]
 
 
 class LocalRepresentationCalc(RepresentationCalc):
@@ -99,18 +107,12 @@ class ElementAugmentedLocalRepresentationCalc(RepresentationCalc):
             representation_function=representation_function,
             representation_function_kwargs=representation_function_kwargs,
         )
-        self.sorted_elements = get_sorted_elements(possible_nuclear_charges)
+        self.sorted_elements = unique_(possible_nuclear_charges)
 
     def calc_with_component_bounds(self, compound: Compound, **additional_kwargs):
-        ncharges = compound.nuclear_charges
-        representation = self.representation_function(
-            ncharges,
-            compound.coordinates,
-            **self.representation_function_kwargs,
-            **additional_kwargs
-        )
+        representation = self.get_representation(compound, **additional_kwargs)
         output = gen_element_augmented_local_rep_object(
-            ncharges, representation, self.sorted_elements
+            compound.nuclear_charges, representation, self.sorted_elements
         )
         return output, array_([[0, representation.shape[1]]])
 
@@ -132,7 +134,7 @@ class GlobalRepresentationCalc(RepresentationCalc):
             compound.nuclear_charges,
             compound.coordinates,
             **self.representation_function_kwargs,
-            **additional_kwargs
+            **additional_kwargs,
         )
         return representation, array_([[0, representation.shape[0]]])
 
@@ -147,14 +149,60 @@ class ProcessedRepresentationListCalc:
         kwargs = comp_kwargs_tuple[1]
         return self.representation_object.calc_with_component_bounds(comp, **kwargs)
 
+    def _ingest(self, representation, component_bounds, output, allow_None_entries):
+        if output is None:
+            if (type(representation) in [dict, list]) or allow_None_entries:
+                output = []
+            else:
+                output = typed.List()
+        if allow_None_entries:
+            check_component_bounds = component_bounds is not None
+        else:
+            check_component_bounds = True
+        if check_component_bounds:
+            if self.component_bounds is None:
+                self.component_bounds = component_bounds
+            else:
+                assert self.component_bounds.shape == component_bounds.shape
+                assert all_(self.component_bounds == component_bounds)
+        output.append(representation)
+        return output
+
     def __call__(
         self,
         compound_list,
         num_procs=None,
-        fixed_num_threads=1,
+        fixed_num_threads=None,
         allow_None_entries=False,
         additional_kwarg_list=None,
+        vacate_list=False,
     ):
+        output = None
+
+        # Single-process + vacate: inline the calc so peak memory is
+        # max_N(|compound_list[N:]| + |output[:N]|) rather than
+        # |compound_list| + |all results|. Requires fixed_num_threads is None
+        # because thread-env reset only happens in embarrassingly_parallel's
+        # child-exec path.
+        if vacate_list and fixed_num_threads is None and default_num_procs(num_procs) == 1:
+            for compound_id in range(len(compound_list)):
+                compound = compound_list[compound_id]
+                if additional_kwarg_list is None:
+                    (
+                        representation,
+                        component_bounds,
+                    ) = self.representation_object.calc_with_component_bounds(compound)
+                else:
+                    (
+                        representation,
+                        component_bounds,
+                    ) = self.representation_object.calc_with_component_bounds(
+                        compound, **additional_kwarg_list[compound_id]
+                    )
+                output = self._ingest(representation, component_bounds, output, allow_None_entries)
+                compound_list[compound_id] = None
+            return output
+
         if additional_kwarg_list is None:
             lr_output = embarrassingly_parallel(
                 self.representation_object.calc_with_component_bounds,
@@ -172,28 +220,12 @@ class ProcessedRepresentationListCalc:
                 fixed_num_threads=fixed_num_threads,
             )
 
-        output = None
-        if not allow_None_entries:
-            check_component_bounds = True
-
-        for representation, component_bounds in lr_output:
-            if output is None:
-                if (type(representation) in [dict, list]) or allow_None_entries:
-                    output = []
-                else:
-                    output = typed.List()
-
-            # Check that representation component shapes are consistent.
-            if allow_None_entries:
-                check_component_bounds = component_bounds is not None
-
-            if check_component_bounds:
-                if self.component_bounds is None:
-                    self.component_bounds = component_bounds
-                else:
-                    assert self.component_bounds.shape == component_bounds.shape
-                    assert all_(self.component_bounds == component_bounds)
-            output.append(representation)
+        for compound_id in range(len(lr_output)):
+            representation, component_bounds = lr_output[compound_id]
+            output = self._ingest(representation, component_bounds, output, allow_None_entries)
+            if vacate_list:
+                compound_list[compound_id] = None
+                lr_output[compound_id] = None
         return output
 
     def clear_component_bounds(self):

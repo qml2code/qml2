@@ -14,6 +14,7 @@ from ..jit_interfaces import (
     exp_,
     int_,
     jit_,
+    max_,
     mean_,
     prange_,
     sqrt_,
@@ -22,6 +23,7 @@ from ..jit_interfaces import (
     zeros_,
 )
 from ..kernels.kernels import l1_norm_dist, l2_norm_sq_dist
+from .representations import OML_rep_params, component_id_mat_map
 
 dist_function_dict = {"l1": l1_norm_dist, "l2": l2_norm_sq_dist}
 
@@ -550,8 +552,9 @@ def rep_stddevs_from_kernel_input(compound_kernel_input):
     return sigmas
 
 
-def rep_stddevs(oml_compound_list):
-    compound_kernel_input = OML_KernelInput(oml_compound_list)
+def rep_stddevs(oml_compound_list=None, compound_kernel_input=None):
+    if compound_kernel_input is None:
+        compound_kernel_input = OML_KernelInput(oml_compound_list)
     return rep_stddevs_from_kernel_input(compound_kernel_input)
 
 
@@ -578,3 +581,28 @@ def renormed_smoothened_sigmas(sigmas, relatively_small_val=1.0e-3, norm="l2"):
     large_sigma_mean = mean_(sigmas[large_ids])
     new_sigmas[small_ids] = large_sigma_mean
     return new_sigmas
+
+
+def sigmas_redivied_by_mats(
+    oml_rep_params: OML_rep_params,
+    oml_compound_list=None,
+    compound_kernel_input=None,
+    stddevs=None,
+    norm="l2",
+):
+    if stddevs is None:
+        stddevs = rep_stddevs(
+            oml_compound_list=oml_compound_list, compound_kernel_input=compound_kernel_input
+        )
+    comp_mat_map = component_id_mat_map(oml_rep_params)
+    num_comps = max(max_(comp_ids) for comp_ids in comp_mat_map) + 1
+    sigmas = empty_(num_comps)
+    nmats = len(comp_mat_map)
+    for comp_ids in comp_mat_map:
+        mat_sigmas = stddevs[comp_ids]
+        if norm == "l2":
+            final_mat_sigma = sqrt_(sum_(mat_sigmas**2) * nmats)
+        else:
+            final_mat_sigma = sum_(mat_sigmas) * nmats
+        sigmas[comp_ids] = final_mat_sigma
+    return sigmas

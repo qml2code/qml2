@@ -98,3 +98,11 @@ class Compound:
             self.representation = generate_cmbdf(
                 self.nuclear_charges, self.coordinates, convolutions, **kwargs
             )
+
+    def generate_rep_from_func(self, rep_func, *extra_args, **extra_kwargs):
+        """
+        Generate the Compound's representation using a custom representation function.
+        """
+        self.representation = rep_func(
+            self.nuclear_charges, self.coordinates, *extra_args, **extra_kwargs
+        )

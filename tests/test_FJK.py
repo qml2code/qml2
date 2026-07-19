@@ -14,26 +14,37 @@ from conftest import (
     str2rng,
 )
 
-from qml2.jit_interfaces import array_, sqrt_
-
 min_nhatoms = 4
 max_nhatoms = 5
 
 
 def run_single_FJK_pair_test(
-    pair_name, pair_kwargs, checksums_storage, use_gpu=False, use_Huckel=False
+    pair_name,
+    pair_kwargs,
+    checksums_storage,
+    use_gpu=False,
+    use_Huckel=False,
+    oml_rep_params_kwargs={"max_angular_momentum": 1},
+    excluded_xyzs=None,
+    **extra_comp_param_kwargs,
 ):
     from qml2.orb_ml import OML_Compound, OML_CompoundList, OML_Slater_pair
-    from qml2.orb_ml.kernels import gaussian_kernel, gaussian_kernel_symmetric, rep_stddevs
+    from qml2.orb_ml.kernels import (
+        gaussian_kernel,
+        gaussian_kernel_symmetric,
+        sigmas_redivied_by_mats,
+    )
     from qml2.orb_ml.oml_compound import OML_pyscf_calc_params
     from qml2.orb_ml.representations import OML_rep_params
 
     checksums_rng = str2rng(pair_name)
 
-    example_xyzs = perturbed_xyz_nhatoms_interval(min_nhatoms, max_nhatoms)
+    example_xyzs = perturbed_xyz_nhatoms_interval(
+        min_nhatoms, max_nhatoms, excluded_xyzs=excluded_xyzs
+    )
 
     calc_params = OML_pyscf_calc_params(orb_grad_tol=1.0e-11, scf_conv_tol=1.0e-11)
-    rep_params = OML_rep_params(max_angular_momentum=1)
+    rep_params = OML_rep_params(**oml_rep_params_kwargs)
 
     A_xyzs = example_xyzs[:32]
     B_xyzs = example_xyzs[32:48]
@@ -42,6 +53,7 @@ def run_single_FJK_pair_test(
         "pyscf_calc_params": calc_params,
         "use_gpu": use_gpu,
         "use_Huckel": use_Huckel,
+        **extra_comp_param_kwargs,
     }
 
     if pair_kwargs is None:
@@ -59,13 +71,16 @@ def run_single_FJK_pair_test(
     A_compounds = OML_CompoundList([comp_func(xyz) for xyz in A_xyzs])
     B_compounds = OML_CompoundList([comp_func(xyz) for xyz in B_xyzs])
 
-    rep_param_kwargs = {"rep_params": rep_params}
-    A_compounds.generate_orb_reps(**rep_param_kwargs, test_mode=True, serial=use_gpu)
-    B_compounds.generate_orb_reps(**rep_param_kwargs, test_mode=True, serial=use_gpu)
+    total_rep_param_kwargs = {"rep_params": rep_params}
+    A_compounds.generate_orb_reps(**total_rep_param_kwargs, test_mode=True, serial=use_gpu)
+    B_compounds.generate_orb_reps(**total_rep_param_kwargs, test_mode=True, serial=use_gpu)
 
+    # for xyz, comp in zip(A_xyzs, A_compounds):
+    #     print(xyz, comp.orb_mat)
     # Calculate sigmas.
-    sigmas = rep_stddevs(A_compounds)
-    sigmas *= sqrt_(array_(float(len(sigmas))))
+    # sigmas = rep_stddevs(A_compounds)
+    # sigmas *= sqrt_(array_(float(len(sigmas))))
+    sigmas = sigmas_redivied_by_mats(rep_params, oml_compound_list=A_compounds)
     global_sigma = 0.5
 
     for norm in ["l1", "l2"]:

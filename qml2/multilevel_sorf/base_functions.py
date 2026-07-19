@@ -111,8 +111,11 @@ def create_sign_invariant_sorf_matrices(
     ntransforms: int_,
     init_size: int_,
     rng: OptionalGenerator_ = None,
+    test_mode: bool = False,
 ):
-    biases, sorf_diags = create_sorf_matrices(nfeature_stacks, ntransforms, init_size, rng=rng)
+    biases, sorf_diags = create_sorf_matrices(
+        nfeature_stacks, ntransforms, init_size, rng=rng, test_mode=test_mode
+    )
     return cos_(biases), sorf_diags
 
 

@@ -1,16 +1,42 @@
+# TODO: Find a way to replace np.gradient with jit_interfaces.gradient_.
 import numpy as np
-from numba import jit, prange
-from numpy import einsum
 from scipy.fft import next_fast_len
 from scipy.signal import fftconvolve
 
-from ..jit_interfaces import repeat_, tiny_
+from ..jit_interfaces import (
+    abs_,
+    arange_,
+    arccos_,
+    array_,
+    cbrt_,
+    concatenate_,
+    cos_,
+    dot_,
+    einsum_,
+    exp_,
+    float_,
+    int_,
+    jit_,
+    l2_norm_,
+    max_,
+    min_,
+    pi_,
+    prange_,
+    repeat_,
+    sign_,
+    sin_,
+    sort_,
+    sqrt_,
+    tiny_,
+    unique_,
+    zeros_,
+)
 from ..test_utils.toy_representation import all_atoms_relevant
-from .basic_utilities import extend_for_pbc
+from .basic_utilities import extend_for_pbc, representation_numba_parallelization
 
 
-@jit(nopython=True)
-def hermite_polynomial(x, degree, a=1):
+@jit_
+def hermite_polynomial(x, degree: int_, a: float_ = 1):
     if degree == 1:
         return -2 * a * x
     elif degree == 2:
@@ -29,33 +55,26 @@ def hermite_polynomial(x, degree, a=1):
         return -32 * x1 + 160 * x2 - 120 * (a * x)
 
 
-jit(nopython=True)
-
-
+@jit_
 def fcut(Rij, rcut, grad=False):
     if grad:
-        arg = (np.pi * Rij) / rcut
-        return 0.5 * (np.cos(arg) + 1), (-np.pi * np.sin(arg)) / (2 * rcut)
+        arg = (pi_ * Rij) / rcut
+        return 0.5 * (cos_(arg) + 1), (-pi_ * sin_(arg)) / (2 * rcut)
     else:
-        return 0.5 * (np.cos((np.pi * Rij) / rcut) + 1)
+        return 0.5 * (cos_((pi_ * Rij) / rcut) + 1)
 
 
-@jit(nopython=True)
-def calc_angle(a, b, c):
-    v1 = a - b
-    v2 = c - b
-    v1 = v1 / np.linalg.norm(v1)
-    v2 = v2 / np.linalg.norm(v2)
-    cos_angle = np.dot(v1, v2)
-    # Clipping to ensure numerical stability
-    cos_angle = min(1.0, max(cos_angle, -1.0))
-    angle = np.arccos(cos_angle)
-    return angle
+@jit_
+def cut_to_abs_unity(val):
+    if abs_(val) > 1.0:
+        return sign_(val)
+    else:
+        return val
 
 
-@jit(nopython=True, parallel=True)
+@jit_(numba_parallel=representation_numba_parallelization(), numba_cache=True)
 def generate_data_with_gradients(
-    size, charges, coods, rconvs_arr, aconvs_arr, cutoff_r=12.0, n_atm=2.0
+    size, charges, coords, rconvs_arr, aconvs_arr, cutoff_r: float_ = 12.0, n_atm: float_ = 2.0
 ):
     rconvs, drconvs = rconvs_arr[0], rconvs_arr[1]
     aconvs, daconvs = aconvs_arr[0], aconvs_arr[1]
@@ -64,26 +83,26 @@ def generate_data_with_gradients(
     nrs = m1 * n1
     nAs = m2 * n2
     rstep = cutoff_r / rconvs.shape[-1]
-    astep = np.pi / (aconvs.shape[-1])
-    twob = np.zeros((size, size, nrs))
-    threeb = np.zeros((size, size, size, nAs))
-    twob_temps = np.zeros((size, size, 8))
-    threeb_temps = np.zeros((size, size, size, 9))
+    astep = pi_ / (aconvs.shape[-1])
+    twob = zeros_((size, size, nrs))
+    threeb = zeros_((size, size, size, nAs))
+    twob_temps = zeros_((size, size, 8))
+    threeb_temps = zeros_((size, size, size, 9))
 
-    for i in prange(size):
-        z, atom = charges[i], coods[i]
+    for i in prange_(size):
+        z, atom = charges[i], coords[i]
 
         for j in range(i + 1, size):
-            rij = atom - coods[j]
-            rij_norm = np.linalg.norm(rij)
+            rij = atom - coords[j]
+            rij_norm = l2_norm_(rij)
 
             if rij_norm != 0 and rij_norm < cutoff_r:
                 grad_dist = rij / rij_norm
                 z2 = charges[j]
-                arg = (np.pi * rij_norm) / cutoff_r
-                fcutij, gfcut = 0.5 * (np.cos(arg) + 1), (-np.pi * np.sin(arg)) / (2 * cutoff_r)
+                arg = (pi_ * rij_norm) / cutoff_r
+                fcutij, gfcut = 0.5 * (cos_(arg) + 1), (-pi_ * sin_(arg)) / (2 * cutoff_r)
                 ind = rij_norm / rstep
-                ac = np.sqrt(z * z2)
+                ac = sqrt_(z * z2)
                 pref = ac * fcutij
                 twob_temps[i][j][:5] = ac, fcutij, gfcut, rij_norm, ind
                 twob_temps[j][i][:5] = ac, fcutij, gfcut, rij_norm, ind
@@ -99,36 +118,30 @@ def generate_data_with_gradients(
                         id2 += 1
 
                 for k in range(j + 1, size):
-                    rik = atom - coods[k]
-                    rik_norm = np.linalg.norm(rik)
+                    rik = atom - coords[k]
+                    rik_norm = l2_norm_(rik)
 
                     if rik_norm != 0 and rik_norm < cutoff_r:
                         z3 = charges[k]
 
-                        rkj = coods[k] - coods[j]
+                        rkj = coords[k] - coords[j]
 
-                        rkj_norm = np.linalg.norm(rkj)
+                        rkj_norm = l2_norm_(rkj)
 
                         fcutik, fcutjk = fcut(rik_norm, cutoff_r), fcut(rkj_norm, cutoff_r)
                         fcut_tot = fcutij * fcutik * fcutjk
 
-                        cos1 = np.minimum(
-                            1.0, np.maximum(np.dot(rij, rik) / (rij_norm * rik_norm), -1.0)
-                        )
-                        cos2 = np.minimum(
-                            1.0, np.maximum(np.dot(-rij, -rkj) / (rij_norm * rkj_norm), -1.0)
-                        )
-                        cos3 = np.minimum(
-                            1.0, np.maximum(np.dot(rkj, -rik) / (rkj_norm * rik_norm), -1.0)
-                        )
+                        cos1 = min_(1.0, max_(dot_(rij, rik) / (rij_norm * rik_norm), -1.0))
+                        cos2 = min_(1.0, max_(dot_(-rij, -rkj) / (rij_norm * rkj_norm), -1.0))
+                        cos3 = min_(1.0, max_(dot_(rkj, -rik) / (rkj_norm * rik_norm), -1.0))
 
-                        ang1 = np.arccos(cos1)
-                        ang2 = np.arccos(cos2)
-                        ang3 = np.arccos(cos3)
+                        ang1 = arccos_(cos1)
+                        ang2 = arccos_(cos2)
+                        ang3 = arccos_(cos3)
                         sin1, sin2, sin3 = (
-                            np.abs(np.sin(ang1)),
-                            np.abs(np.sin(ang2)),
-                            np.abs(np.sin(ang3)),
+                            abs_(sin_(ang1)),
+                            abs_(sin_(ang2)),
+                            abs_(sin_(ang3)),
                         )
 
                         ind1 = ang1 / astep
@@ -138,7 +151,7 @@ def generate_data_with_gradients(
                         atm_temp = rij_norm * rik_norm * rkj_norm
                         atm = atm_temp**n_atm
                         atm1 = atm * atm_temp
-                        atm = np.exp(n_atm * (rij_norm + rik_norm + rkj_norm))
+                        atm = exp_(n_atm * (rij_norm + rik_norm + rkj_norm))
 
                         charge = np.cbrt(z * z2 * z3)
 
@@ -232,16 +245,16 @@ def generate_data_with_gradients(
 
                                 id2 += 1
 
-    twob_grad = np.zeros((size, nrs, size, 3))
-    threeb_grad = np.zeros((size, nAs, size, 3))
+    twob_grad = zeros_((size, nrs, size, 3))
+    threeb_grad = zeros_((size, nAs, size, 3))
 
     for i in range(size):
-        grad_temp = np.zeros((nrs, 3))
-        agrad_temp = np.zeros((nAs, 3))
+        grad_temp = zeros_((nrs, 3))
+        agrad_temp = zeros_((nAs, 3))
 
         for j in range(size):
-            rij = coods[i] - coods[j]
-            agrad_temp2 = np.zeros((nAs, 3))
+            rij = coords[i] - coords[j]
+            agrad_temp2 = zeros_((nAs, 3))
 
             if j != i:
                 ac, fcutij, gfcutij, rij_norm, ind = twob_temps[i][j][:5]
@@ -265,8 +278,8 @@ def generate_data_with_gradients(
 
                 for k in range(size):
                     if k != j and k != i:
-                        rkj = coods[k] - coods[j]
-                        rik = coods[i] - coods[k]
+                        rkj = coords[k] - coords[j]
+                        rik = coords[i] - coords[k]
                         fcutik, gfcutik, rik_norm = twob_temps[i][k][1:4]
                         fcutjk, gfcutjk, rjk_norm = twob_temps[j][k][
                             1:4
@@ -319,29 +332,38 @@ def generate_data_with_gradients(
     return twob, twob_grad, threeb, threeb_grad
 
 
-@jit(nopython=True, parallel=True)
-def generate_data(size, charges, coods, rconvs, aconvs, cutoff_r=10.0, n_atm=2.0):
+@jit_(numba_parallel=representation_numba_parallelization(), numba_cache=True)
+def generate_data(
+    size: int_,
+    charges,
+    coords,
+    rconvs,
+    aconvs,
+    cutoff_r: float_ = 10.0,
+    n_atm: float_ = 2.0,
+    pi_: float_ = pi_,
+):
     rconvs, aconvs = rconvs[0], aconvs[0]
     m1, n1 = rconvs.shape[0], rconvs.shape[1]
     m2, n2 = aconvs.shape[0], aconvs.shape[1]
     nrs = m1 * n1
     nAs = m2 * n2
     rstep = cutoff_r / rconvs.shape[-1]
-    astep = np.pi / aconvs.shape[-1]
-    twob = np.zeros((size, size, nrs))
-    threeb = np.zeros((size, size, size, nAs))
+    astep = pi_ / aconvs.shape[-1]
+    twob = zeros_((size, size, nrs))
+    threeb = zeros_((size, size, size, nAs))
 
-    for i in prange(size):
-        z, atom = charges[i], coods[i]
+    for i in prange_(size):
+        z, atom = charges[i], coords[i]
 
         for j in range(i + 1, size):
-            rij = atom - coods[j]
-            rij_norm = np.linalg.norm(rij)
+            rij = atom - coords[j]
+            rij_norm = l2_norm_(rij)
 
             if rij_norm != 0 and rij_norm < cutoff_r:
                 z2 = charges[j]
                 ind = int(rij_norm / rstep)
-                pref = np.sqrt(z * z2)
+                pref = sqrt_(z * z2)
 
                 id2 = 0
                 for i1 in range(m1):
@@ -352,28 +374,22 @@ def generate_data(size, charges, coods, rconvs, aconvs, cutoff_r=10.0, n_atm=2.0
                         id2 += 1
 
                 for k in range(j + 1, size):
-                    rik = atom - coods[k]
-                    rik_norm = np.linalg.norm(rik)
+                    rik = atom - coords[k]
+                    rik_norm = l2_norm_(rik)
 
                     if rik_norm != 0 and rik_norm < cutoff_r:
                         z3 = charges[k]
 
-                        rkj = coods[k] - coods[j]
+                        rkj = coords[k] - coords[j]
 
-                        rkj_norm = np.linalg.norm(rkj)
+                        rkj_norm = l2_norm_(rkj)
 
-                        cos1 = np.minimum(
-                            1.0, np.maximum(np.dot(rij, rik) / (rij_norm * rik_norm), -1.0)
-                        )
-                        cos2 = np.minimum(
-                            1.0, np.maximum(np.dot(rij, rkj) / (rij_norm * rkj_norm), -1.0)
-                        )
-                        cos3 = np.minimum(
-                            1.0, np.maximum(np.dot(-rkj, rik) / (rkj_norm * rik_norm), -1.0)
-                        )
-                        ang1 = np.arccos(cos1)
-                        ang2 = np.arccos(cos2)
-                        ang3 = np.arccos(cos3)
+                        cos1 = cut_to_abs_unity(dot_(rij, rik) / (rij_norm * rik_norm))
+                        cos2 = cut_to_abs_unity(dot_(rij, rkj) / (rij_norm * rkj_norm))
+                        cos3 = cut_to_abs_unity(dot_(-rkj, rik) / (rkj_norm * rik_norm))
+                        ang1 = arccos_(cos1)
+                        ang2 = arccos_(cos2)
+                        ang3 = arccos_(cos3)
 
                         ind1 = int(ang1 / astep)
                         ind2 = int(ang2 / astep)
@@ -381,7 +397,7 @@ def generate_data(size, charges, coods, rconvs, aconvs, cutoff_r=10.0, n_atm=2.0
 
                         atm = (rij_norm * rik_norm * rkj_norm) ** n_atm
 
-                        charge = np.cbrt(z * z2 * z3)
+                        charge = cbrt_(z * z2 * z3)
 
                         pref = charge
 
@@ -421,20 +437,19 @@ def get_convolutions(
     a2=2.0,
     astep=0.0002,
     nAs=4,
-    gradients=True,
 ):
     """
     returns convolutions required for computing cMBDF functionals evaluated via Fast Fourier Transforms on a discretized grid
     """
     step_r = rcut / next_fast_len(int(rcut / rstep))
-    astep = np.pi / next_fast_len(int(np.pi / astep))
-    rgrid = np.arange(0.0, rcut, step_r)
-    rgrid2 = np.arange(-rcut, rcut, step_r)
-    agrid = np.arange(0.0, np.pi, astep)
-    agrid2 = np.arange(-np.pi, np.pi, astep)
+    astep = pi_ / next_fast_len(int(pi_ / astep))
+    rgrid = arange_(0.0, rcut, step_r)
+    rgrid2 = arange_(-rcut, rcut, step_r)
+    agrid = arange_(0.0, pi_, astep)
+    agrid2 = arange_(-pi_, pi_, astep)
 
     size = len(rgrid)
-    gaussian = np.exp(-a1 * (rgrid2**2)) * np.sqrt(a1 / np.pi)
+    gaussian = exp_(-a1 * (rgrid2**2)) * sqrt_(a1 / pi_)
 
     m = order + 1
 
@@ -444,7 +459,9 @@ def get_convolutions(
     fms = [
         gaussian,
         *[
-            gaussian * hermite_polynomial(rgrid2, i, np.sqrt(a1)) * ((-np.sqrt(a1)) ** m)
+            gaussian
+            * hermite_polynomial(rgrid2, i, sqrt_(array_(a1)))
+            * ((-sqrt_(array_(a1))) ** m)
             for i in range(1, m + 1)
         ],
     ]
@@ -454,31 +471,31 @@ def get_convolutions(
 
         temp, dtemp = [], []
         for alpha in alpha_list:
-            gn = np.exp(-alpha * rgrid)
-            arr = fftconvolve(gn, fm, mode="same") * step_r
-            arr = arr / np.max(np.abs(arr))
+            gn = exp_(-alpha * rgrid)
+            arr = array_(fftconvolve(gn, fm, mode="same")) * step_r
+            arr = arr / max_(abs_(arr))
             temp.append(arr)
             darr = np.gradient(arr, step_r)
             dtemp.append(darr)
-        temp1.append(np.array(temp))
-        dtemp1.append(np.array(dtemp))
+        temp1.append(array_(temp))
+        dtemp1.append(array_(dtemp))
 
         temp, dtemp = [], []
         for n in n_list:
             gn = (rgrid + 1) ** n
-            arr = fftconvolve(1 / gn, fm, mode="same")[:size] * step_r
-            arr = arr / np.max(np.abs(arr))
+            arr = array_(fftconvolve(1 / gn, fm, mode="same")[:size]) * step_r
+            arr = arr / max_(abs_(arr))
             temp.append(arr)
             darr = np.gradient(arr, step_r)
             dtemp.append(darr)
-        temp2.append(np.array(temp))
-        dtemp2.append(np.array(dtemp))
+        temp2.append(array_(temp))
+        dtemp2.append(array_(dtemp))
 
-    rconvs = np.concatenate((np.asarray(temp1), np.asarray(temp2)), axis=1)
-    drconvs = np.concatenate((np.asarray(dtemp1), np.asarray(dtemp2)), axis=1)
+    rconvs = concatenate_((array_(temp1), array_(temp2)), axis=1)
+    drconvs = concatenate_((array_(dtemp1), array_(dtemp2)), axis=1)
 
     size = len(agrid)
-    gaussian = np.exp(-a2 * (agrid2**2)) * np.sqrt(a2 / np.pi)
+    gaussian = exp_(-a2 * (agrid2**2)) * sqrt_(a2 / pi_)
 
     m = order + 1
 
@@ -487,7 +504,9 @@ def get_convolutions(
     fms = [
         gaussian,
         *[
-            gaussian * hermite_polynomial(agrid2, i, np.sqrt(a2)) * ((-np.sqrt(a2)) ** m)
+            gaussian
+            * hermite_polynomial(agrid2, i, sqrt_(array_(a2)))
+            * ((-sqrt_(array_(a2))) ** m)
             for i in range(1, m + 1)
         ],
     ]
@@ -497,23 +516,23 @@ def get_convolutions(
 
         temp, dtemp = [], []
         for n in range(1, nAs + 1):
-            gn = np.cos(n * agrid)
-            arr = fftconvolve(gn, fm, mode="same") * astep
-            arr = arr / np.max(np.abs(arr))
+            gn = cos_(n * agrid)
+            arr = array_(fftconvolve(gn, fm, mode="same")) * astep
+            arr = arr / max_(abs_(arr))
             temp.append(arr)
             darr = np.gradient(arr, astep)
             dtemp.append(darr)
-        temp1.append(np.array(temp))
-        dtemp1.append(np.array(dtemp))
+        temp1.append(array_(temp))
+        dtemp1.append(array_(dtemp))
 
-    aconvs, daconvs = np.asarray(temp1), np.asarray(dtemp1)
+    aconvs, daconvs = array_(temp1), array_(dtemp1)
 
-    return np.asarray([rconvs, drconvs]), np.asarray([aconvs, daconvs])
+    return array_([rconvs, drconvs]), array_([aconvs, daconvs])
 
 
 def get_asize(charges):
-    keys = np.unique(np.concatenate(charges))
-    asize = {key: max([(mol == key).sum() for mol in charges]) for key in keys}
+    keys = unique_(concatenate_(charges))
+    asize = {int(key): max([(mol == key).sum() for mol in charges]) for key in keys}
     return asize
 
 
@@ -579,15 +598,15 @@ def generate_cmbdf(
         pad = size
 
     if local:
-        mat = np.zeros((pad, desc_size))
+        mat = zeros_((pad, desc_size))
 
         if gradients:
-            dmat = np.zeros((pad, desc_size, pad, 3))
+            dmat = zeros_((pad, desc_size, pad, 3))
             twob, twob_grad, threeb, threeb_grad = generate_data_with_gradients(
                 size, charges, coords, rconvs, aconvs, rcut, n_atm
             )
-            mat[:size, :nr] = einsum("ij... -> i...", twob)
-            mat[:size, nr:] = einsum("ijk... -> i...", threeb)
+            mat[:size, :nr] = einsum_("ij... -> i...", twob)
+            mat[:size, nr:] = einsum_("ijk... -> i...", threeb)
             dmat[:size, :nr, :size, :] = twob_grad
             dmat[:size, nr:, :size, :] = threeb_grad
 
@@ -596,8 +615,8 @@ def generate_cmbdf(
 
         else:
             twob, threeb = generate_data(size, charges, coords, rconvs, aconvs, rcut, n_atm)
-            mat[:size, :nr] = einsum("ij... -> i...", twob)
-            mat[:size, nr:] = einsum("ijk... -> i...", threeb)
+            mat[:size, :nr] = einsum_("ij... -> i...", twob)
+            mat[:size, nr:] = einsum_("ijk... -> i...", threeb)
             if cell is not None:
                 mat = mat[:true_size]
 
@@ -607,22 +626,22 @@ def generate_cmbdf(
     rep_size = sum(asize.values())
     elements = {k: [] for k in keys}
     for i in range(size):
-        elements[charges[i]].append(i)
+        elements[int(charges[i])].append(i)
 
-    mat, ind = np.zeros((rep_size, desc_size)), 0
+    mat, ind = zeros_((rep_size, desc_size)), 0
 
     twob, threeb = generate_data(size, charges, coords, rconvs, aconvs, rcut, n_atm)
 
     for key in keys:
         num = len(elements[key])
 
-        bags = np.zeros((num, desc_size))
+        bags = zeros_((num, desc_size))
 
         if num != 0:
-            bags[:, :nr] = einsum("ij... -> i...", twob[elements[key]])
-            bags[:, nr:] = einsum("ijk... -> i...", threeb[elements[key]])
+            bags[:, :nr] = einsum_("ij... -> i...", twob[elements[key]])
+            bags[:, nr:] = einsum_("ijk... -> i...", threeb[elements[key]])
 
-            mat[ind : ind + num] = -np.sort(-bags, axis=0)
+            mat[ind : ind + num] = -sort_(-bags, axis=0)
 
         ind += asize[key]
 

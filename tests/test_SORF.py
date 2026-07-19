@@ -33,7 +33,7 @@ def run_global_SORF(checksums_storage, checksums_rng):
     reductor = get_reductor(rep_vecs, init_size)
     fix_reductor_signs(reductor)
     biases, sorf_diags = create_sorf_matrices(
-        nfeature_stacks, ntransforms, init_size, rng=sorf_rng
+        nfeature_stacks, ntransforms, init_size, rng=sorf_rng, test_mode=True
     )
 
     Z_matrix = generate_sorf(
@@ -72,7 +72,12 @@ def run_local_SORF(checksums_storage, checksums_rng):
     reductors, sorted_elements = get_reductors_diff_species(rep_vecs, ncharges, init_size)
     fix_reductors_signs(reductors)
     all_biases, all_sorf_diags = create_sorf_matrices_diff_species(
-        nfeature_stacks, sorted_elements.shape[0], ntransforms, init_size, rng=sorf_rng
+        nfeature_stacks,
+        sorted_elements.shape[0],
+        ntransforms,
+        init_size,
+        rng=sorf_rng,
+        test_mode=True,
     )
 
     Z_matrix = generate_local_sorf(

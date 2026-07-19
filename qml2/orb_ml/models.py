@@ -3,11 +3,13 @@
 # decreasing CPU time required to test a model many times.
 
 from ..jit_interfaces import LinAlgError_, Module_, empty_, exp_
-from ..models.hyperparameter_optimization import BOMain, KRRLeaveOneOutL2regOpt
+from ..models.hyperparameter_optimization import KRRLeaveOneOutL2regOpt
 from ..models.krr import KRRLocalModel, KRRModel
+from ..optimizers import BOMain
 from ..utils import flatten_to_scalar
 from .kernels import (
     OML_KernelInput,
+    is_pair_rep,
     kernel_from_processed_input,
     renormed_smoothened_sigmas,
     rep_stddevs_from_kernel_input,
@@ -262,9 +264,16 @@ class FJKModel(KRRModel):
             compounds, suppress_openmp=suppress_openmp, num_procs=num_procs
         )
         kernel_input = OML_KernelInput(init_compounds)
+        if self.shift_quantities_extensive:
+            if is_pair_rep(init_compounds[0]):
+                all_nuclear_charges = [pair.comps[0].nuclear_charges for pair in compounds]
+            else:
+                all_nuclear_charges = [comp.nuclear_charges for comp in compounds]
+        else:
+            all_nuclear_charges = None
         return self.predict_from_kernel_input(
             kernel_input,
-            all_nuclear_charges=[comp.nuclear_charges for comp in compounds],
+            all_nuclear_charges=all_nuclear_charges,
         )
 
     def predict_from_compound(self, input_compound):

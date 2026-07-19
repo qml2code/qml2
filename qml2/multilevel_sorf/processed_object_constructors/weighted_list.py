@@ -10,7 +10,7 @@ Possible usecases:
 # TODO: should this be combined with Ensemble?
 from ...jit_interfaces import all_, empty_
 from ..base_constructors import get_transform_list_dict2datatype
-from .standard import el_aug_rep_def
+from .standard import RepresentationCalc, el_aug_rep_def
 
 
 def comp2weighted_list_rep_def(comp_rep_def):
@@ -28,7 +28,7 @@ local_dn_rep_weighted_list_list_dict2datatype = get_transform_list_dict2datatype
 )
 
 
-class WeightedListRepresentationCalc:
+class WeightedListRepresentationCalc(RepresentationCalc):
     def __init__(self, rep_calc):
         self.rep_calc = rep_calc
 

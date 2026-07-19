@@ -13,6 +13,7 @@ from ..jit_interfaces import (
     where_,
     zeros_,
 )
+from .basic_utilities import representation_numba_parallelization
 
 
 @jit_
@@ -28,14 +29,14 @@ def extract_lower_triangle_diagonal(matrix: ndarray_, size: int_):
 
 
 # TODO KK: Implement other sortings?
-@jit_
+@jit_(numba_cache=True)
 def generate_coulomb_matrix(atomic_charges: ndarray_, coordinates: ndarray_, size: int_ = 29):
     natoms = atomic_charges.shape[0]
     cm = zeros_((natoms, natoms))
 
     summation = zeros_((natoms,))
 
-    for i in range(natoms):
+    for i in prange_(natoms):
         for j in range(i, natoms):
             if i == j:
                 cm[i, j] = 0.5 * (atomic_charges[i] ** 2.4)
@@ -97,7 +98,7 @@ def compute_ncm(bags):
     return ncm // 2
 
 
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=representation_numba_parallelization(), numba_cache=True)
 def generate_bob(
     nuclear_charges,
     coordinates,

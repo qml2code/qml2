@@ -40,13 +40,35 @@ def count_conformer_nums(ensemble_global_rep_list):
 
 
 @jit_
+def transform_2D_representations_into_principal_component_versions(
+    representations_2D,
+    new_representations_2D,
+    principal_component_matrix,
+    add_remainder=False,
+):
+    npcas = principal_component_matrix.shape[0]
+    new_representations_2D[:, :npcas] = dot_(
+        representations_2D[:, :], principal_component_matrix.T
+    )
+    if add_remainder:
+        for comp_id in range(new_representations_2D.shape[0]):
+            sq_remainder = l2_sq_norm(representations_2D[comp_id]) - l2_sq_norm(
+                new_representations_2D[comp_id, :npcas]
+            )
+            if sq_remainder < 0.0:
+                remainder = 0.0
+            else:
+                remainder = sqrt_(sq_remainder)
+            new_representations_2D[comp_id, -1] = remainder
+
+
+@jit_
 def transform_all_conformer_representations_into_principal_component_versions(
     ensemble_global_rep_list,
     new_ensemble_global_rep_list,
     principal_component_matrix,
     add_remainder=False,
 ):
-    npcas = principal_component_matrix.shape[0]
     for ensemble_id in prange_(len(ensemble_global_rep_list)):
         ensemble_global_rep = ensemble_global_rep_list[ensemble_id]
         num_generations = len(ensemble_global_rep)
@@ -54,19 +76,12 @@ def transform_all_conformer_representations_into_principal_component_versions(
             conformers = ensemble_global_rep[generation_id]
             new_conformers = new_ensemble_global_rep_list[ensemble_id][generation_id]
             new_conformers.rhos[:] = conformers.rhos[:]
-            new_components = new_conformers.components
-            components = conformers.components
-            new_components[:, :npcas] = dot_(components[:, :], principal_component_matrix.T)
-            if add_remainder:
-                for comp_id in range(new_components.shape[0]):
-                    sq_remainder = l2_sq_norm(components[comp_id]) - l2_sq_norm(
-                        new_components[comp_id, :npcas]
-                    )
-                    if sq_remainder < 0.0:
-                        remainder = 0.0
-                    else:
-                        remainder = sqrt_(sq_remainder)
-                    new_components[comp_id, -1] = remainder
+            transform_2D_representations_into_principal_component_versions(
+                conformers.components,
+                new_conformers.components,
+                principal_component_matrix,
+                add_remainder,
+            )
 
 
 def generate_blank_ensembles(conformer_nums, rep_size):

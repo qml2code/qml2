@@ -101,13 +101,17 @@ def xyz_nhatoms(xyz):
     return np.sum(np.array(nuclear_charges) != 1)
 
 
-def perturbed_xyz_nhatoms_interval(min_nhatoms, max_nhatoms, seed=1):
+def perturbed_xyz_nhatoms_interval(min_nhatoms, max_nhatoms, seed=1, excluded_xyzs=None):
     """
     Find perturbed xyzs with a small enough number of heavy atoms.
     """
     output = []
     all_xyzs = perturbed_xyz_list(seed=seed)
     for xyz in all_xyzs:
+        if excluded_xyzs is not None:
+            xyz_base_name = os.path.basename(xyz)
+            if xyz_base_name in excluded_xyzs:
+                continue
         nhatoms = xyz_nhatoms(xyz)
         if (nhatoms >= min_nhatoms) and (nhatoms <= max_nhatoms):
             output.append(xyz)

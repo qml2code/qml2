@@ -14,6 +14,8 @@ from ..jit_interfaces import (
 )
 from ..utils import weighted_array
 
+neglect_orb_occ = 0.1
+
 
 # Some auxiliary numba functions.
 @jit_
@@ -81,7 +83,7 @@ def add_orb_atom_coupling(
                 )
 
 
-@jit_
+@jit_(numba_cache=True)
 def gen_orb_atom_scalar_rep(
     coup_mats, coeffs, angular_momenta, atom_ao_range, max_ang_mom: int_, scalar_reps
 ):
@@ -107,7 +109,7 @@ def gen_orb_atom_scalar_rep(
                         cur_array_position = cur_array_position + 1
 
 
-@jit_
+@jit_(numba_cache=True)
 def ang_mom_descr(
     ovlp_mat, coeffs, angular_momenta, atom_ao_range, max_ang_mom: int_, scalar_reps, rho_val
 ):
@@ -139,7 +141,7 @@ class OML_rep_params:
         num_prop_times=1,
         prop_delta_t=1.0,
         atom_sorted_pseudo_orbs=False,
-        ofd_coup_mats=False,
+        odf_coup_mats=False,
         orb_en_adj=False,
         ofd_extra_inversions=True,
     ):
@@ -151,7 +153,7 @@ class OML_rep_params:
         self.prop_delta_t = prop_delta_t
 
         self.atom_sorted_pseudo_orbs = atom_sorted_pseudo_orbs
-        self.ofd_coup_mats = ofd_coup_mats
+        self.odf_coup_mats = odf_coup_mats
         self.orb_en_adj = orb_en_adj
         self.ofd_extra_inversions = ofd_extra_inversions
 
@@ -186,49 +188,37 @@ def gen_propagator_based_coup_mats(rep_params, hf_orb_coeffs, hf_orb_energies, o
     return output
 
 
-def gen_odf_based_coup_mats(rep_params, mo_coeff, mo_energy, mo_occ, ovlp_mat):
-    reconstr_mats_kwargs = {"mo_energy": mo_energy, "mo_occ": mo_occ}
-    coupling_matrices = ()
+def reconstr_mat(inv_mo_coeff, mo_energy=None, mo_occ=None, mat_type="ovlp"):
+    norbs = inv_mo_coeff.shape[1]
+    match mat_type:
+        case "density":
+            # NOTE: only using 1. and 0. to make representation invariant w.r.t. UHF<->RHF change.
+            mo_arr = zeros_(norbs)
+            for orb_id in range(norbs):
+                if mo_occ[orb_id] > neglect_orb_occ:
+                    mo_arr[orb_id] = 1.0
+        case "Fock":
+            mo_arr = mo_energy
+        case "ovlp":
+            mo_arr = ones_(norbs)
+        case _:
+            raise Exception("Unknown reconstructed matrix type.")
+    return matmul_(inv_mo_coeff * mo_arr, inv_mo_coeff.T)
+
+
+def reconstr_mats(inv_mo_coeff, mo_energy=None, mo_occ=None, mat_types=["ovlp"]):
+    output = [
+        reconstr_mat(inv_mo_coeff, mo_energy=mo_energy, mo_occ=mo_occ, mat_type=mat_type)
+        for mat_type in mat_types
+    ]
+    return tuple(output)
+
+
+def gen_odf_based_coup_mats(mo_coeff, mo_energy, mo_occ, ovlp_mat):
     inv_mo_coeff = matmul_(ovlp_mat, mo_coeff)
-    coeff_mats = [inv_mo_coeff, mo_coeff]
-    if rep_params.ofd_extra_inversions:
-        mat_types_list = [["ovlp", "Fock", "density"] for i in range(2)]
-    else:
-        mat_types_list = [["ovlp", "Fock"], ["density"]]
-    for coeff_mat_id, mat_types in enumerate(mat_types_list):
-        added_mats = reconstr_mats(
-            coeff_mats[coeff_mat_id], **reconstr_mats_kwargs, mat_types=mat_types
-        )
-        if len(mat_types) == 1:
-            coupling_matrices = (*coupling_matrices, added_mats)
-        else:
-            coupling_matrices = (*coupling_matrices, *added_mats)
-    return coupling_matrices
-
-
-def reconstr_mat(coeff_mat, mo_energy=None, mo_occ=None, mat_type="ovlp"):
-    norbs = coeff_mat.shape[1]
-    mo_arr = ones_(norbs, dtype=float)
-    for orb_id in range(norbs):
-        if mat_type == "density":
-            if mo_occ[orb_id] < 0.5:
-                mo_arr[orb_id] = 0.0
-        if mat_type == "Fock":
-            mo_arr[orb_id] = mo_energy[orb_id]
-    return matmul_(coeff_mat * mo_arr, coeff_mat.T)
-
-
-def reconstr_mats(mo_coeffs, mo_energy=None, mo_occ=None, mat_types=["ovlp"]):
-    output = ()
-    for mat_type in mat_types:
-        output = (
-            *output,
-            reconstr_mat(mo_coeffs, mo_energy=mo_energy, mo_occ=mo_occ, mat_type=mat_type),
-        )
-    if len(mat_types) == 1:
-        return output[0]
-    else:
-        return output
+    return reconstr_mats(
+        inv_mo_coeff, mo_energy=mo_energy, mo_occ=mo_occ, mat_types=["ovlp", "density", "Fock"]
+    )
 
 
 #   Representation of contribution of a single atom to an orb.
@@ -250,7 +240,9 @@ class OML_orb_atom_rep:
         self.pre_renorm_rho = self.rho
         self.atom_id = None
 
-    def completed_scalar_reps(self, coeffs, rep_params, angular_momenta, coup_mats):
+    def completed_scalar_reps(
+        self, coeffs, rep_params: OML_rep_params, angular_momenta, coup_mats
+    ):
         couplings = zeros_(scalar_coup_length(rep_params, coup_mats))
         gen_orb_atom_scalar_rep(
             coup_mats,
@@ -262,9 +254,8 @@ class OML_orb_atom_rep:
         )
         self.scalar_reps = append_(self.scalar_reps, couplings)
         self.scalar_reps /= self.pre_renorm_rho
-        if rep_params.propagator_coup_mat or rep_params.ofd_coup_mats:
-            # TO-DO Do we need this?
-            # The parts corresponding to the angular momentum distribution are duplicated, remove:
+        if rep_params.odf_coup_mats:
+            # The parts corresponding to the angular momentum distribution are covered in the "overlap" component of the representation, remove them:
             self.scalar_reps = self.scalar_reps[rep_params.max_angular_momentum :]
 
     def energy_readjustment(self, energy_shift, rep_params):
@@ -300,31 +291,40 @@ def scalar_rep_length(oml_comp):
     return len(first_comp.orb_reps[0].orb_atom_reps[0].scalar_reps)
 
 
-# Generates a representation of what different components of atomic components of orbitals correspond to.
-# TO-DO check whether it's correct for numba implementation?
-def component_id_ang_mom_map(rep_params):
+def component_id_ang_mom_map(rep_params: OML_rep_params):
+    """
+    What different components of atomic contribution vector representations correspond to.
+    """
     output = []
     if rep_params.propagator_coup_mat:
         # Real and imaginary propagator components for each propagation time plus the overlap matrix.
         num_coup_matrices = rep_params.num_prop_times * 2 + 1
     else:
         # Components corresponding to the angular momentum distribution.
-        if rep_params.ofd_coup_mats:
-            num_coup_matrices = 3
-            if rep_params.ofd_extra_inversions:
-                num_coup_matrices *= 2
-        else:
-            num_coup_matrices = 3  # F, J, and K; or overlap, F, and density
-    if not (rep_params.propagator_coup_mat or rep_params.ofd_coup_mats):
+        num_coup_matrices = 3  # F, J, and K; or overlap, F, and density
+    if not (rep_params.propagator_coup_mat or rep_params.odf_coup_mats):
+        # terms corresponding to the
         for ang_mom in range(1, num_ang_mom(rep_params)):
-            output.append([ang_mom, ang_mom, -1, True])
+            output.append((ang_mom, ang_mom, -1, True))
     for coup_mat_id in range(num_coup_matrices):
         for same_atom in [True, False]:
             for ang_mom1 in range(num_ang_mom(rep_params)):
                 for ang_mom2 in range(num_ang_mom(rep_params)):
                     if not (same_atom and (ang_mom1 > ang_mom2)):
-                        output.append([ang_mom1, ang_mom2, coup_mat_id, same_atom])
+                        output.append((ang_mom1, ang_mom2, coup_mat_id, same_atom))
     return output
+
+
+def component_id_mat_map(rep_params: OML_rep_params):
+    """
+    Which coupling matrices different components of atomic contribution vector representations correspond to.
+    """
+    output = {}
+    for comp_id, (_, _, coup_mat_id, _) in enumerate(component_id_ang_mom_map(rep_params)):
+        if coup_mat_id not in output:
+            output[coup_mat_id] = []
+        output[coup_mat_id].append(comp_id)
+    return [array_(comp_ids) for comp_ids in output.values()]
 
 
 # Auxiliary functions
@@ -437,7 +437,7 @@ def OML_orb_rep_from_coeffs(
 ):
     atom_list = []
     prev_atom = -1
-    for atom_id, ao_coeff in zip(atom_ids, orb_coeffs):
+    for atom_id in atom_ids:
         if prev_atom != atom_id:
             atom_list.append(atom_id)
             prev_atom = atom_id

@@ -1,9 +1,7 @@
 # K.Karan. TODO: PBC for FCHL19 + gradients is incomplete
 from ..data import nCartDim
 from ..jit_interfaces import (
-    abs_,
     any_,
-    arccos_,
     array_,
     cos_,
     dim0float_array_,
@@ -22,21 +20,23 @@ from ..jit_interfaces import (
     optional_ndarray_,
     pi_,
     prange_,
-    sign_,
     sin_,
     sqrt_,
     tiny_,
     zeros_,
 )
 from .basic_utilities import (
+    calc_cos_angle_unclipped,
+    calc_cos_with_angle,
     calculate_distances_wrcut,
     extend_for_pbc,
     get_from_sparse_matrix,
     get_neighbor_id,
+    representation_numba_parallelization,
 )
 
 
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=representation_numba_parallelization())
 def decay(
     r: ndarray_,
     invrc: float_,
@@ -57,21 +57,6 @@ def decay(
                 i_id = get_neighbor_id(j, i, relevant_distance_ids, relevant_distance_nums)
                 f[j, i_id] = f[i, j_id]
     return f
-
-
-@jit_
-def calc_cos_angle_unclipped(r_ab, r_ac, r_bc):
-    cos_angle = (r_ab**2 + r_ac**2 - r_bc**2) / r_ab / r_ac / 2
-    return cos_angle
-
-
-@jit_
-def calc_cos_with_angle(r_ab, r_ac, r_bc):
-    cos_angle = calc_cos_angle_unclipped(r_ab, r_ac, r_bc)
-    if abs_(cos_angle) > 1.0:
-        cos_angle = sign_(cos_angle)
-    angle = arccos_(cos_angle)
-    return cos_angle, angle
 
 
 @jit_
@@ -135,7 +120,7 @@ def get_3body_component(
         rep[z : z + nabasis] += angular * radial[l] * ksi3
 
 
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=representation_numba_parallelization())
 def get_element_types(
     nuclear_charges, elements, natoms: int, nelements: int, dint_: dtype_ = dint_
 ):
@@ -154,7 +139,7 @@ def get_element_types(
     return element_types
 
 
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=representation_numba_parallelization(), numba_cache=True)
 def generate_fchl19_no_gradients(
     nuclear_charges: ndarray_,
     coordinates: ndarray_,
@@ -572,7 +557,7 @@ def get_3body_component_with_gradient(
             )
 
 
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=representation_numba_parallelization(), numba_cache=True)
 def generate_fchl_with_gradients(
     nuclear_charges,
     coordinates,
@@ -820,6 +805,26 @@ def generate_fchl19(
     cell: optional_ndarray_ = None,
     gradients=False,
 ):
+    """
+    Generate FCHL19 representation (DOI:10.1063/1.5126701).
+
+    Args:
+        nuclear_charges (np.ndarray): array of nuclear charges.
+        coordinates (np.ndarray): array of coordinates.
+        elements (np.ndarray): list of unique nuclear charges (atom types) encountered in chemical space of interest. Default value corresponds to QM7b: np.ndarray([1, 6, 7, 8, 16]).
+        nRs2 (int): Number of gaussian basis functions in the two-body terms.
+        nRs3 (int): Number of gaussian basis functions in the three-body radial part.
+        nFourier (int): Order of Fourier expansion
+        eta2 (float): Precision in the gaussian basis functions in the two-body terms
+        eta3 (float): Precision in the gaussian basis functions in the three-body radial part
+        zeta (float): Precision parameter of basis functions in the three-body angular part
+        rcut (float): Cut-off radius of the two-body terms
+        acut (float): Cut-off radius of the three-body terms
+        gradients (bool): To return gradients or not
+
+    Returns:
+        if gradient==False returns `rep` - 2D array of atomic FCHL19 representations; otherwise returns a tuple of `(rep, grad, relevant_atom_ids, relevant_atom_nums)`. For a givent `atom_id` `relevant_atom_num=relevant_atom_nums[atom_id]` gives number of atoms with non-zero gradient values for `rep[atom_id]`, `relevant_atom_ids[atom_id,:relevant_atom_num]` are the ids of these atoms, `grad[atom_id,:,:relevant_atom_num,:]` are the (non-zero) gradients of `rep[atom_id,:]`.
+    """
     if gradients:
         assert nFourier == 1
         return generate_fchl_with_gradients(

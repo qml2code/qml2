@@ -3,11 +3,14 @@ import bz2
 import os
 import pickle
 import subprocess
+import time
 import traceback
 from copy import deepcopy
 from datetime import datetime
 
 from .data import NUCLEAR_CHARGE
+
+rep_numba_parallel_env_var_name = "QML2_NUMBA_REP_PARALLELIZATION"
 
 
 class OptionUnavailableError(Exception):
@@ -16,6 +19,15 @@ class OptionUnavailableError(Exception):
 
 def now():
     return datetime.now()
+
+
+def now_secs():
+    return time.perf_counter()
+
+
+def total_cpu_time():
+    t = os.times()
+    return t.user + t.system + t.children_user + t.children_system
 
 
 # TODO: implement proper verbose mode displaying messages both from scipy and the rest of the code.
@@ -65,7 +77,13 @@ def checked_environ_val(
     environ_name: str, expected_answer=None, default_answer=None, var_class=int
 ):
     """
-    Returns os.environ while checking for exceptions.
+    Returns `os.environ[environ_name]` while checking for exceptions.
+
+    Args:
+        environ_name (str): name of the environmental variable
+        exected_answer: if not None return this value (used in situations where environmental variable's contents should be overriden by an optional keyword argument if present).
+        default_answer: if not None return `var_class(default_answer)` if environmental variable is not defined.
+        var_class: function used to convert the `str` value of environmental variable.
     """
     if expected_answer is None:
         try:
@@ -81,6 +99,13 @@ def checked_environ_val(
 
 
 def checked_logical_environ_val(environ_name: str, default_answer=None):
+    """
+    Check whether an environmental variable defines a logical value. "0" and "1" correspond to "False" and "True", other values lead to raising an exception.
+
+    Args:
+        environ_name (str): name of the environmental variable.
+        default_answer (bool or None): value returned if the environmental variable is not defined.
+    """
     str_val = checked_environ_val(environ_name, default_answer=None, var_class=str)
     if not str_val:
         return default_answer
@@ -90,7 +115,9 @@ def checked_logical_environ_val(environ_name: str, default_answer=None):
         case "1":
             return True
         case _:
-            raise Exception
+            raise Exception(
+                f"Unknown value for environmental variable {environ_name}: found {str_val}, expecting '0' for `False` or '1' for `True`."
+            )
 
 
 # atom types
@@ -160,8 +187,8 @@ def fetch_package_data(filepath):
     return "".join(open(package_data_position(filepath), "r").readlines())
 
 
-def run(*cmd_args):
-    return subprocess.run(list(cmd_args))
+def run(*cmd_args, capture_output=False):
+    return subprocess.run(list(cmd_args), capture_output=capture_output)
 
 
 def copy_package_to(other_dir):

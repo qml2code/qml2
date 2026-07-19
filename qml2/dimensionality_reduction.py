@@ -15,8 +15,9 @@ from .jit_interfaces import (
     standard_normal_array_from_rng_,
     sum_,
     svd_,
+    unique_,
 )
-from .utils import check_allocation, get_sorted_elements
+from .utils import check_allocation
 
 
 @jit_
@@ -88,7 +89,7 @@ def get_reductors_diff_species(
     rng=None,
 ) -> Tuple[ndarray_, ndarray_]:
     if sorted_elements is None:
-        sorted_elements = get_sorted_elements(ncharges)
+        sorted_elements = unique_(ncharges)
     nelements = sorted_elements.shape[0]
     nreps = representations.shape[1]
     all_reductors = empty_((nelements, nreps, npcas))

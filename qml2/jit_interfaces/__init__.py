@@ -13,10 +13,12 @@
 import importlib
 
 from ..basic_utils import checked_environ_val, checked_logical_environ_val
-from .jit_manager import available_jits, numba_flag
+from .jit_manager import available_jits, numba_flag, torch_flag
 
 default_jit_env_var_name = "QML2_DEFAULT_JIT"
 avoid_numba_numpy_parallellization_env_var_name = "QML2_AVOID_NUMBA_NUMPY_PARALLELIZATION"
+
+used_jit_name = None
 
 
 def set_defaults_from_interface(interface_name):
@@ -35,6 +37,10 @@ def set_default_jit(new_jit_flag):
     global used_jit_name
     used_jit_name = new_jit_flag
     set_defaults_from_interface("." + used_jit_name + "_interface")
+
+
+def get_default_jit():
+    return used_jit_name
 
 
 def allow_numba_numpy_parallelization():

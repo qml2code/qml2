@@ -204,9 +204,16 @@ def half_inv_sq_sigma(sigma):
     return sigma ** (-2) * 0.5
 
 
+@jit_
+def check_kernel_shape(output_kernel, nmols_A, nmols_B):
+    assert output_kernel.shape == (nmols_A, nmols_B), "Invalid input kernel shape!"
+
+
 def construct_kernel_symmetric(kernel_function, sigma_to_param=inv_sigma):
     @jit_(numba_parallel=True)
     def kernel_symmetric(A, sigma, output_kernel):
+        nmols = A.shape[0]
+        check_kernel_shape(output_kernel, nmols, nmols)
         sigma_param = sigma_to_param(sigma)
         for i in prange_(A.shape[0]):
             for j in range(i + 1):
@@ -219,9 +226,12 @@ def construct_kernel_symmetric(kernel_function, sigma_to_param=inv_sigma):
 def construct_kernel_asymmetric(kernel_function, sigma_to_param=inv_sigma):
     @jit_(numba_parallel=True)
     def kernel_asymmetric(A, B, sigma, output_kernel):
+        nmols_A = A.shape[0]
+        nmols_B = B.shape[0]
+        check_kernel_shape(output_kernel, nmols_A, nmols_B)
         sigma_param = sigma_to_param(sigma)
-        for i in prange_(A.shape[0]):
-            for j in range(B.shape[0]):
+        for i in prange_(nmols_A):
+            for j in range(nmols_B):
                 output_kernel[i, j] = kernel_function(A[i], B[j], sigma_param)
 
     return kernel_asymmetric
@@ -266,6 +276,7 @@ def construct_local_kernel_asymmetric(
         nmols_B = B_natoms.shape[0]
         ubound_arr_A = get_atom_environment_ranges(A_natoms)
         ubound_arr_B = get_atom_environment_ranges(B_natoms)
+        check_kernel_shape(output_kernel, nmols_A, nmols_B)
 
         for i in prange_(nmols_A):
             A_rep_subarray = A[ubound_arr_A[i] : ubound_arr_A[i + 1]]
@@ -289,6 +300,7 @@ def construct_local_kernel_symmetric(
         sigma_param = sigma_to_param(sigma)
         nmols_A = A_natoms.shape[0]
         ubound_arr_A = get_atom_environment_ranges(A_natoms)
+        check_kernel_shape(output_kernel, nmols_A, nmols_A)
 
         for i in prange_(nmols_A):
             A_rep_subarray = A[ubound_arr_A[i] : ubound_arr_A[i + 1]]
@@ -334,6 +346,7 @@ def construct_local_dn_kernel_asymmetric(
         nmols_B = B_natoms.shape[0]
         ubound_arr_A = get_atom_environment_ranges(A_natoms)
         ubound_arr_B = get_atom_environment_ranges(B_natoms)
+        check_kernel_shape(output_kernel, nmols_A, nmols_B)
 
         for i in prange_(nmols_A):
             A_rep_subarray = A[ubound_arr_A[i] : ubound_arr_A[i + 1]]
@@ -362,6 +375,7 @@ def construct_local_dn_kernel_symmetric(
         sigma_param = sigma_to_param(sigma)
         nmols_A = A_natoms.shape[0]
         ubound_arr_A = get_atom_environment_ranges(A_natoms)
+        check_kernel_shape(output_kernel, nmols_A, nmols_A)
 
         for i in prange_(nmols_A):
             A_rep_subarray = A[ubound_arr_A[i] : ubound_arr_A[i + 1]]

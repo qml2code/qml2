@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 from conftest import (
     add_checksum_to_dict,
     add_reshaped_to_dict,
@@ -14,10 +13,15 @@ from qml2 import Compound
 from qml2.jit_interfaces import array_, default_rng_, empty_, log_
 from qml2.models.krr import KRRLocalModel, KRRModel
 from qml2.models.sorf import SORFLocalModel, SORFModel
+from qml2.representations.calculators import CMCalculator, FCHL19Calculator
 
 default_num_train_mols = 32
 default_num_test_mols = 16
 default_lc_training_set_sizes = [15, 30]
+
+# calculators use parameters for QM7, which is the test dataset we use.
+CMCalc = CMCalculator(size=29)
+FCHL19Calc = FCHL19Calculator(elements=np.array([1, 6, 7, 8, 16], dtype=int))
 
 
 def tuples_to_set(qm7_tuples):
@@ -51,18 +55,17 @@ def run_model_type_check(
     lc_training_set_sizes=default_lc_training_set_sizes,
     model_kwargs={},
 ):
-    _ = pytest.importorskip("boss")
     # define model
     # custom ln_l2reg_diag_ratio_bounds are needed because l2reg optimization for lower log values becomes numerically unstable (e.g. sometimes gives -24., sometimes -22.)
-    # test_mode=True is also for numerical stability
+    # hyp_1D_opt_method="grid" is also for numerical stability
     # training_reps_suppress_openmp=False avoids representation recompilation (only noticeable for small sizes)
     model = model_type(
         **model_kwargs,
         l2reg_total_iterpts=8,
         sigma_total_iterpts=8,
-        test_mode=True,
+        hyp_1D_opt_method="grid",
         ln_l2reg_diag_ratio_bounds=[-8.0, 2.0],
-        training_reps_suppress_openmp=False
+        training_reps_suppress_openmp=False,
     )
 
     (
@@ -76,7 +79,7 @@ def run_model_type_check(
 
     checksums = {}
     lc_rng = str2rng("learning")
-    # for BOSS reproducability
+    # fix the global RNG seed for test reproducibility
     np.random.seed(8)
     # first build learning curve while re-optimizing hyperparameters
     mean_MAE, std_MAE = model.learning_curve(
@@ -131,7 +134,7 @@ def test_global_model():
         run_model_type_check(
             KRRModel,
             "global_model_shift_" + str(shift_quantity),
-            model_kwargs={"shift_quantities": shift_quantity},
+            model_kwargs={"representation_function": CMCalc, "shift_quantities": shift_quantity},
         )
 
 
@@ -141,6 +144,7 @@ def test_local_model():
             KRRLocalModel,
             "local_model_shift_" + str(shift_quantity),
             model_kwargs={
+                "representation_function": FCHL19Calc,
                 "shift_quantities": shift_quantity,
                 "possible_nuclear_charges": qm7_nuclear_charges,
             },
@@ -153,11 +157,18 @@ def test_sorf_models():
         "shift_quantities": False,
         "npcas": 8,
         "use_rep_reduction": True,
-        "fixed_reductor_signs": True,
+        "test_mode": True,
     }
     for name, constructor, extra_kwargs in [
-        ("global", SORFModel, {}),
-        ("local", SORFLocalModel, {"possible_nuclear_charges": np.array([1, 6, 7, 8, 16])}),
+        ("global", SORFModel, {"representation_function": CMCalc}),
+        (
+            "local",
+            SORFLocalModel,
+            {
+                "possible_nuclear_charges": np.array([1, 6, 7, 8, 16]),
+                "representation_function": FCHL19Calc,
+            },
+        ),
     ]:
         for i, kwargs in enumerate([kwargs1, kwargs2]):
             full_kwargs = {"nfeatures": 1024, "rng": default_rng_(8), **kwargs, **extra_kwargs}

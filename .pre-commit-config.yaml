@@ -9,6 +9,9 @@ repos:
         -   id: end-of-file-fixer
         -   id: trailing-whitespace
         -   id: check-added-large-files
+            # tests/test_data/ holds committed test fixtures (e.g. the ~1.7MB
+            # qm7.tar.gz); the default 500KB cap still guards all source.
+            exclude: ^tests/test_data/
         -   id: check-ast
         -   id: check-json
         -   id: debug-statements

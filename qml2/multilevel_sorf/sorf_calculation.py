@@ -586,6 +586,7 @@ class MultilevelSORF:
         parameter_list,
         rng=None,
         disable_numba_parallelization=False,
+        test_mode=False,
     ):
         assert len(function_definition_list) == len(parameter_list)
         for level in function_definition_list:
@@ -594,6 +595,7 @@ class MultilevelSORF:
         self.parameter_list = parameter_list
         # for test reproducability.
         self.rng = rng
+        self.test_mode = test_mode
         #
         self.disable_numba_parallelization = disable_numba_parallelization
         self.pickler = None
@@ -890,12 +892,12 @@ class MultilevelSORF:
         output_size = nfeature_stacks * input_size
         if sign_invariant:
             cur_bias_cosines, cur_sorf_diags = create_sign_invariant_sorf_matrices(
-                nfeature_stacks, ntransforms, input_size, rng=self.rng
+                nfeature_stacks, ntransforms, input_size, rng=self.rng, test_mode=self.test_mode
             )
             input_object.bias_cosines[:, :] = cur_bias_cosines
         else:
             cur_biases, cur_sorf_diags = create_sorf_matrices(
-                nfeature_stacks, ntransforms, input_size, rng=self.rng
+                nfeature_stacks, ntransforms, input_size, rng=self.rng, test_mode=self.test_mode
             )
             input_object.biases[:, :] = cur_biases
         input_object.sorf_diags[:, :, :] = cur_sorf_diags

@@ -17,6 +17,7 @@ from ..jit_interfaces import (
     max_,
     mean_,
     prange_,
+    unique_,
     zeros_,
 )
 from ..kernels.gradient_common import atom_force_dim
@@ -24,7 +25,7 @@ from ..kernels.gradient_kernels import prediction_vector_length
 from ..kernels.gradient_sorf import generate_local_force_sorf
 from ..kernels.sorf import create_sorf_matrices_diff_species, generate_local_sorf
 from ..math import cho_solve, svd_aligned
-from ..utils import get_sorted_elements, multiply_transposed
+from ..utils import multiply_transposed
 from .forces_utils import combine_energy_forces_rhs, get_importance_multipliers
 from .hyperparameter_optimization import (
     KFoldsMultipleObservables,
@@ -50,10 +51,12 @@ class callable_ninv_MAE_local_dn_SORF(callable_ninv_MAE_local_dn):
         pca_num_samples=1024,
         use_lstsq=False,
         lstsq_rcond=0.0,
+        test_mode=False,
         **kfold_kwargs,
     ):
         self.use_lstsq = use_lstsq
         self.lstsq_rcond = lstsq_rcond
+        self.test_mode = test_mode
         self.init_training_set(
             training_representations_list, training_nuclear_charges_list, training_quantities
         )
@@ -73,7 +76,7 @@ class callable_ninv_MAE_local_dn_SORF(callable_ninv_MAE_local_dn):
         super().init_training_set(
             training_representations_list, training_nuclear_charges_list, training_quantities
         )
-        self.sorted_elements = get_sorted_elements(self.training_nuclear_charges)
+        self.sorted_elements = unique_(self.training_nuclear_charges)
         self.nspecies = self.sorted_elements.shape[0]
 
     def init_sorf(
@@ -84,7 +87,11 @@ class callable_ninv_MAE_local_dn_SORF(callable_ninv_MAE_local_dn):
         self.init_size = init_size
         self.nfeatures = self.nfeature_stacks * self.init_size
         self.all_biases, self.all_sorf_diags = create_sorf_matrices_diff_species(
-            self.nfeature_stacks, self.nspecies, self.ntransforms, self.init_size
+            self.nfeature_stacks,
+            self.nspecies,
+            self.ntransforms,
+            self.init_size,
+            test_mode=self.test_mode,
         )
         self.use_reductors = use_reductors
         if self.use_reductors:

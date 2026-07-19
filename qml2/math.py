@@ -137,6 +137,15 @@ def regression_using_Z_SVD(
     return dot_(Z_Vh.T, transformed_alphas_rhs)
 
 
+def regression_using_Z(Z_matrix, quantities, l2reg=None, l2reg_diag_ratio=None):
+    k = dot_(Z_matrix, Z_matrix.T)
+    if l2reg is None:
+        if l2reg_diag_ratio is not None:
+            l2reg = l2reg_diag_ratio * sum_(k[diag_indices_from_(k)]) / min(Z_matrix.shape)
+    alphas_untransformed = cho_solve(k, quantities, l2reg=l2reg, overwrite_a=True)
+    return dot_(Z_matrix.T, alphas_untransformed)
+
+
 # KK: Accelerates training if you train on several properties that can be sorted in such a way that each property is available for each molecule for which the
 # next property is available (but not necessarily vice-versa). In this case re-indexing allows usage of a single Cholesky decomposition for all properties.
 # Originally developed for doing G2S for molecules of different sizes. Might require heavy revision to be usable again.

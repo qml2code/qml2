@@ -1,3 +1,4 @@
+from ..basic_utils import checked_logical_environ_val, rep_numba_parallel_env_var_name
 from ..jit_interfaces import (
     abs_,
     all_,
@@ -30,11 +31,19 @@ from ..jit_interfaces import (
     repeat_,
     save_,
     searchsorted_,
+    sign_,
     sqrt_,
     sum_,
     zeros_,
 )
 from ..utils import get_atom_environment_ranges, l2_norm_sq_dist
+
+
+def representation_numba_parallelization():
+    """
+    This function is used as the `numba_parallel` value in `jit_` instances for representation routines using `prange`.
+    """
+    return checked_logical_environ_val(rep_numba_parallel_env_var_name, default_answer=False)
 
 
 # For introducing periodic boundary conditions.
@@ -85,7 +94,7 @@ def should_be_added(
     return False
 
 
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=representation_numba_parallelization())
 def count_atom_copies(
     cell_dir_coordinates: ndarray_,
     cell_dir_lower_reach: ndarray_,
@@ -129,7 +138,7 @@ def count_atom_copies(
     return atom_additional_copy_number
 
 
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=representation_numba_parallelization())
 def extend_for_pbc(
     coordinates: ndarray_,
     element_types: ndarray_,
@@ -222,7 +231,7 @@ def is_inside_box(atom_coords: ndarray_, box_lcoords: ndarray_, box_ucoords: nda
     return all_(atom_coords > box_lcoords) and all_(atom_coords < box_ucoords)
 
 
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=representation_numba_parallelization())
 def get_rough_num_neighbors(
     coordinates: ndarray_, rcut: float_, natoms: int_, dint_: dtype_ = dint_
 ):
@@ -279,7 +288,7 @@ def symmetrize_neighbor_ids(neighbor_ids: ndarray_, num_neighbors: ndarray_, nat
             num_neighbors[int(j)] += 1
 
 
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=representation_numba_parallelization())
 def symmetrize_sparse_matrix(
     matrix: ndarray_, neighbor_ids: ndarray_, num_neighbors: ndarray_, natoms: int_
 ):
@@ -293,7 +302,7 @@ def symmetrize_sparse_matrix(
             matrix[j, other_i_id] = matrix_saved[i, j_id]
 
 
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=representation_numba_parallelization())
 def calculate_distances_wrcut(
     coordinates: ndarray_, natoms: int_, max_rcut: float_, dint_: dtype_ = dint_
 ):
@@ -329,7 +338,7 @@ def calculate_distances_wrcut(
 
 
 # Calculate all diahedral angles.
-@jit_(numba_parallel=True)
+@jit_(numba_parallel=representation_numba_parallelization())
 def calculate_dihedral_angles(coords, pi_=array_(pi_), zero_=array_(0.0), one_=array_(1.0)):
     """
     For tensor element with indices i,j,k,l, stores angle between the triangle i,j,k
@@ -381,3 +390,24 @@ def calculate_dihedral_angles(coords, pi_=array_(pi_), zero_=array_(0.0), one_=a
     for i in prange_(size):
         all_angles[i, i, :, :] = 0.0
     return all_angles
+
+
+@jit_
+def calc_cos_angle_unclipped(r_ab, r_ac, r_bc):
+    """
+    Calculate cosine of the angle between "ab" and "ac" using distances.
+    """
+    cos_angle = (r_ab**2 + r_ac**2 - r_bc**2) / r_ab / r_ac / 2
+    return cos_angle
+
+
+@jit_
+def calc_cos_with_angle(r_ab, r_ac, r_bc):
+    """
+    Calculate the angle between "ab" and "ac" along with the corresponding cosine using distances.
+    """
+    cos_angle = calc_cos_angle_unclipped(r_ab, r_ac, r_bc)
+    if abs_(cos_angle) > 1.0:
+        cos_angle = sign_(cos_angle)
+    angle = arccos_(cos_angle)
+    return cos_angle, angle

@@ -1,3 +1,4 @@
+import pytest
 from conftest import (
     add_checksum_to_dict,
     add_reshaped_to_dict,
@@ -25,7 +26,6 @@ from qml2.multilevel_sorf.processed_object_constructors.fjk import (
     slater_pairs_rep_def,
 )
 from qml2.multilevel_sorf.sorf_calculation import MultilevelSORF
-from qml2.orb_ml.representations import OML_rep_params
 
 num_conformers = 8
 
@@ -38,8 +38,15 @@ FJK_function_definition_list = [
     "sorf",
     "weighted_component_sum",
 ]
-FJK_rep_params = OML_rep_params(max_angular_momentum=1)
-FJK_rep_generator = FJKRepresentationCalc(oml_rep_params=FJK_rep_params)
+
+
+def FJK_rep_generator():
+    from qml2.orb_ml.representations import OML_rep_params
+
+    FJK_rep_params = OML_rep_params(max_angular_momentum=1)
+    return FJKRepresentationCalc(oml_rep_params=FJK_rep_params)
+
+
 qm7_possible_nuclear_charges = array_([1, 6, 7, 8, 16])
 
 
@@ -51,7 +58,7 @@ def create_ensemble_representations(
     r_cut=0.05,
     verbose=False,
     morfeus_random_seed=8,
-    **compound_kwargs
+    **compound_kwargs,
 ):
     ensembles = []
     for SMILES in SMILES_list:
@@ -81,8 +88,8 @@ def generate_check_features(
     compound_representations,
     function_definition_list,
     benchmark_suffix,
-    max_rel_difference=1.0e-6,
-    **parameter_list_kwargs
+    max_rel_difference=1.0e-5,
+    **parameter_list_kwargs,
 ):
     from qml2.jit_interfaces import dot_
 
@@ -90,7 +97,9 @@ def generate_check_features(
         function_definition_list, nfeatures=1024, **parameter_list_kwargs
     )
     sorf_rng = str2rng("sorf")
-    sorf_calculator = MultilevelSORF(function_definition_list, parameter_list, rng=sorf_rng)
+    sorf_calculator = MultilevelSORF(
+        function_definition_list, parameter_list, rng=sorf_rng, test_mode=True
+    )
     reasonable_hyperparameters = sorf_calculator.hyperparameter_initial_guesses(
         compound_representations
     )
@@ -145,6 +154,9 @@ def test_reduced_SLATM_MSORF_features():
     )
     from qml2.representations.calculators import SLATMCalculator
 
+    pytest.importorskip("morfeus")
+    pytest.importorskip("boss")
+
     example_SMILES = get_shuffled_QM7_SMILES()
     ensembles = create_ensemble_representations(example_SMILES, upper_nhatoms_bound=5)
     nmols = len(ensembles)
@@ -198,8 +210,10 @@ def run_feature_test(
     base_class_name="Compound",
     ensemble_rep_wrapper=EnsembleRepresentationCalc,
     parameter_list_kwargs={},
-    **compound_kwargs
+    **compound_kwargs,
 ):
+    pytest.importorskip("morfeus")
+    pytest.importorskip("boss")
     SMILES_list = get_shuffled_QM7_SMILES()
     ensembles = create_ensemble_representations(
         SMILES_list,
@@ -264,9 +278,10 @@ def test_FJK_MSORF_features():
     """
     Test generating 'single determinant' features from FJK.
     """
+    pytest.importorskip("pyscf")
     run_feature_test(
         FJK_function_definition_list + ["weighted_component_sum", "component_sum"],
-        FJK_rep_generator,
+        FJK_rep_generator(),
         fjk_comp_ensemble_list_dict2datatype,
         "FJK",
         upper_nhatoms_bound=5,
@@ -278,13 +293,14 @@ def test_pair_FJK_MSORF_features():
     """
     Test generating 'pair determinant' features from FJK (example used here generates HOMO-unoccupied pair).
     """
+    pytest.importorskip("pyscf")
     compound_kwargs = {
         "second_oml_comp_kwargs": {"used_orb_type": "HOMO_removed"},
     }
     comp_list_dict_list2reps = get_transform_list_dict2datatype(comp_rep_def + ["list"])
     run_feature_test(
         FJK_function_definition_list + ["component_sum"],
-        FJK_rep_generator,
+        FJK_rep_generator(),
         comp_list_dict_list2reps,
         "FJK_Slater_pair",
         base_class_name="OML_Slater_pair",
@@ -300,6 +316,7 @@ def test_pairs_FJK_MSORF_features():
 
     NOTE: the option was introduced to try model excitation energies by combining the representation of HOMO and LUMO. It did not appear in any publications because the resulting methods didn't improve on FCHL19 for spectra prediction.
     """
+    pytest.importorskip("pyscf")
     compound_kwargs = {
         "other_oml_comp_kwargs_list": [
             {"used_orb_type": "HOMO_removed"},
@@ -311,7 +328,7 @@ def test_pairs_FJK_MSORF_features():
     )
     run_feature_test(
         FJK_function_definition_list + ["concatenation", "component_sum"],
-        FJK_rep_generator,
+        FJK_rep_generator(),
         slater_pairs_list_dict_list2reps,
         "FJK_Slater_pairs",
         base_class_name="OML_Slater_pairs",

@@ -6,7 +6,7 @@ requires = [
 
 [project]
 name = "qml2"
-version = "0.1.7"
+version = "0.1.8"
 description = "Collection of Quantum Machine Learning routines"
 readme = "README.md"
 license.text = "MIT License"
@@ -16,11 +16,12 @@ authors = [
   { name = "Danish Khan" },
   { name = "Jan Weinreich" },
 ]
-# qml2 uses some Python 3.12 syntax
-requires-python = ">=3.12"
+# qml2 uses some syntax from newer Python versions (K.Karan.: not %100 sure whether it's 3.10 or 3.11)
+requires-python = ">=3.11"
 
 classifiers = [
   "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
 ]
@@ -33,7 +34,7 @@ optional-dependencies.models = [
   "aalto-boss",
 ]
 optional-dependencies.morfeus = [
-  "morfeus-ml",
+  "morfeus-ml<=0.7.2",
   "rdkit",
 ]
 optional-dependencies.orb_ml = [
@@ -42,6 +43,10 @@ optional-dependencies.orb_ml = [
 ]
 optional-dependencies.torch = [
   "torch",
+]
+
+optional-dependencies.xtb = [
+  "tblite==0.4",
 ]
 
 [tool.setuptools]

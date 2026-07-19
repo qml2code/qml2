@@ -209,6 +209,7 @@ sin_ = np.sin
 arccos_ = np.arccos
 # analytic functions
 sqrt_ = np.sqrt
+cbrt_ = np.cbrt
 exp_ = np.exp
 cosh_ = np.cosh
 sinh_ = np.sinh
@@ -224,6 +225,8 @@ prod_ = np.prod
 abs_ = np.abs
 square_ = np.square
 l2_norm_ = np.linalg.norm
+unique_ = np.unique
+gradient_ = np.gradient
 # linear algebra
 cho_factor_ = cho_factor
 svd_ = np.linalg.svd
@@ -232,6 +235,7 @@ cho_solve_ = cho_solve
 lu_factor_ = lu_factor
 lu_solve_ = lu_solve
 lstsq_ = np.linalg.lstsq
+einsum_ = np.einsum
 # important constants
 pi_ = np.pi
 

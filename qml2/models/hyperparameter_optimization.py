@@ -624,12 +624,12 @@ class KRRLeaveOneOutL2regOpt:
         loss_function=MAE(),
         ln_l2reg_diag_ratio_bounds=[-24.0, 0.0],
         total_iterpts=32,
-        test_mode=False,
+        opt_method="boss",
     ):
         self.loss_function = loss_function
         self.ln_l2reg_diag_ratio_bounds = ln_l2reg_diag_ratio_bounds
         self.total_iterpts = total_iterpts
-        self.test_mode = test_mode
+        self.opt_method = opt_method
 
     def get_l2reg_optimizer_from_parameters(self, parameters):
         train_kernel = self.train_kernel_generator(parameters)
@@ -648,7 +648,7 @@ class KRRLeaveOneOutL2regOpt:
             self.ln_l2reg_diag_ratio_bounds,
             opt_name="l2reg_opt",
             total_iterpts=self.total_iterpts,
-            test_mode=self.test_mode,
+            opt_method=self.opt_method,
         )
 
         if min_output:

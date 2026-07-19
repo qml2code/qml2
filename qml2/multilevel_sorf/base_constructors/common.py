@@ -637,10 +637,12 @@ def get_dict2datatype(definition_list):
 def get_transform_list_dict2datatype(definition_list):
     dict2datatype = get_dict2datatype(definition_list)
 
-    def list_create(dict_list):
+    def list_create(dict_list, vacate_list=False):
         output = typed.List()
-        for d in dict_list:
-            output.append(dict2datatype(d))
+        for obj_id in range(len(dict_list)):
+            output.append(dict2datatype(dict_list[obj_id]))
+            if vacate_list:
+                dict_list[obj_id] = None
         return output
 
     return list_create

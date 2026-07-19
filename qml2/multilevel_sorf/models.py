@@ -18,7 +18,7 @@
 # TODO K.Karan: steepest descent's efficiency suffers a little from Z_matrix being calculated along with derivatives at the same time.
 from scipy.optimize import minimize
 
-from ..basic_utils import ExceptionRaisingClass, display_scipy_convergence, now
+from ..basic_utils import display_scipy_convergence, now
 from ..jit_interfaces import (
     Module_,
     any_,
@@ -41,9 +41,9 @@ from ..jit_interfaces import (
     tiny_,
     zeros_,
 )
-from ..math import regression_using_Z_SVD, svd_aligned
+from ..math import regression_using_Z, regression_using_Z_SVD, svd_aligned
 from ..models.learning_curves import learning_curve_from_predictions
-from ..models.loss_functions import MAE, SquaredSelfConsistentLogCosh
+from ..models.loss_functions import MAE, MSE, SquaredSelfConsistentLogCosh
 from ..models.math import f_winf, ninv_f, possible_numerical_exceptions
 from ..models.property_shifts import get_shift_coeffs
 from ..models.sorf_hyperparameter_optimization import (
@@ -55,12 +55,12 @@ from ..models.sorf_hyperparameter_optimization import (
     leaveoneout_loss_l2reg_der,
     mult_by_importance,
 )
-from ..optimizers import global_optimize_1D
+from ..optimizers import BOMain, global_optimize_1D
 from ..utils import (
     check_allocation,
     flatten_to_scalar,
     get_numba_list,
-    get_sorted_elements,
+    get_possible_nuclear_charges,
     l2_sq_norm,
 )
 from .base_constructors import datatype_prefix
@@ -73,16 +73,6 @@ from .math import (
 from .pickle import Pickler
 from .sorf_calculation import MultilevelSORF
 from .utils import merge_or_replace, optional_array_print_tuple
-
-try:
-    from boss.bo.bo_main import BOMain
-except ModuleNotFoundError:
-    BOMain = ExceptionRaisingClass(
-        ModuleNotFoundError(
-            "Procedure requires installation of aalto-boss via:\npip install aalto-boss"
-        )
-    )
-
 
 implemented_hyperparameters_optimizers = ["steepest_descent", "boss"]
 
@@ -98,6 +88,7 @@ class MultilevelSORFModel(Module_):
         parameter_list,
         intensive_quantity_shift=False,
         extensive_quantity_shift=False,
+        simple_quantity_shift=False,
         quantity_shift=None,
         hyperparameters=None,
         l2reg_diag_ratio=None,
@@ -111,7 +102,7 @@ class MultilevelSORFModel(Module_):
         ln_relative_l2reg_opt_iterpts=32,
         boss_kernel="rbf",
         boss_ln_sigma_bounds_range=3.0,
-        boss_compromise_coeff=1.25e-1,
+        boss_compromise_coeff=None,
         boss_relative_loss_convergence=1.25e-1,
         boss_cycle_initpts=1,
         boss_cycle_iterpts=None,
@@ -126,6 +117,8 @@ class MultilevelSORFModel(Module_):
         object_definition_list=None,
         objects_definition_list=None,
         disable_numba_parallelization=False,
+        l2reg_global_opt_method="boss",
+        test_mode=False,
     ):
         """
         Multilevel SORF model containing automated routines for training, making predictions, and hyperparameter optimization.
@@ -137,6 +130,7 @@ class MultilevelSORFModel(Module_):
             parameter_list (list): list of dicts of parameters of model's levels.
             intensive_quantity_shift (bool): if True quantities are shifted by a constant optimized as a hyperparameter.
             extensive_quantity_shift (bool): if True quantities are shifted by constants, optimized as a hyperparameter, which are multiplied by numbers of atoms of a given kind.
+            simple_quantity_shift (bool): if True use simple generalization of dressed atoms approach to shift quantities.
             quantity_shift (np.array): (hyperparameter) array of quantity shifts (intensive, extensive, or both).
             hyperparameters (np.array): (hyperparameter) array of sigma hyperparameters.
             l2reg_diag_ratio (np.array): (hyperparameter) ratio of l2-regularization coefficient (l2reg) and average diagonal element of the K matrix.
@@ -151,7 +145,7 @@ class MultilevelSORFModel(Module_):
             ln_relative_l2reg_opt_iterpts (int): number of loss function calls during BOSS pre-optimization of l2reg. Default is 32.
             boss_kernel (str): name of kernel used by BOSS. Default is "rbf".
             boss_ln_sigma_bounds_range (float): BOSS optimization of sigmas is performed over (boss_ln_sigma_bounds_range)-neighborhood of initial guesses. Default is 3.0.
-            boss_compromise_coeff (float): compromise coefficient of the loss function during BOSS sigma optimization. Default is 1.25e-1.
+            boss_compromise_coeff (float): compromise coefficient of the loss function during BOSS sigma optimization. Default is None (optimize MSE).
             boss_relative_loss_convergence (float): stop readjusting search bounds of BOSS optimization if the relative loss gain compared to the previous optimization is worse than this value (default is 1.25e-1).
             boss_cycle_initpts (int): value of initpts parameter for BOSS sigmas optimization. Default is 1.
             boss_cycle_iterpts (int): value of iterpts parameter for BOSS sigmas optimization. Default is None, meaning iterpts is calculated from boss_cycle_iterpts_coeff.
@@ -160,24 +154,28 @@ class MultilevelSORFModel(Module_):
             boss_num_printed_glmin (int): how many predicted minima BOSS prints in the end of sigmas optimization.
             boss_use_grad (bool): whether BOSS uses gradients during optimization. Default is False.
             sd_ln_steps (list): step magnitudes used during steepest descent optimization in space of logarithms of sigmas. Default is `[0.5, 0.25, 0.125]`.
-            sd_compromise_coeffs (list): compromise coefficient values used during steepest descent optimization in space of logarithms of sigmas. Default is `[0.5, 0.25, 0.125]`.
+            sd_compromise_coeffs (list): compromise coefficient values used during steepest descent optimization in space of logarithms of sigmas; None value corresponds to optimizing mean square error. Default is `[0.5, 0.25, 0.125]`.
             sd_reuse_Z_derivatives (bool): if False, decrease memory usage (at the expense of CPU time) by not storing derivatives of Z matrix w.r.t. sigmas. Default is True.
             rng (np.random RNG or None): if not None, defines RNG used in random component initialization (e.g. biases and diagonal elements in SORF).
             object_definition_list (list of None): definition list of the datatype the model acts on. Only needed for pickling.
             objects_definition_list (list of None): definition list of the datatype array the model acts on (in case it's not a list of types defined by `object_definition_list`). Only needed for pickling.
             disable_numba_parallelization (bool): if True calculating the feature matrix will not be parallelized over feature vectors (needed when principle components are used in a setting where np.dot is automatically parallelized). Default is False.
+            l2reg_global_opt_method (str): method for 1D optimization used for initial (global) optimization of l2reg (default is "boss" - BOSS optimization, also supports "grid").
+            test_mode (bool): make model output more resistant to RNG perturbations (for now only replaces random sign matrix with continuous approximation)
         """
         self.MultilevelSORF = MultilevelSORF(
             function_definition_list,
             parameter_list,
             rng=rng,
             disable_numba_parallelization=disable_numba_parallelization,
+            test_mode=test_mode,
         )
         self.nhyperparameters = self.get_nhyperparameters()
 
         # for shifting quantities extensively or intensively
         self.intensive_quantity_shift = intensive_quantity_shift
         self.extensive_quantity_shift = extensive_quantity_shift
+        self.simple_quantity_shift = simple_quantity_shift
 
         # current hyperparameter values
         # concatenation of extensive and intensive shifts.
@@ -185,6 +183,10 @@ class MultilevelSORFModel(Module_):
 
         self.hyperparameters = hyperparameters
         self.l2reg_diag_ratio = l2reg_diag_ratio
+        # quantities found during fitting or hyperparameter optimization
+        self.l2reg = None
+        self.alphas = None
+        self.leaveoneout_errors = None
 
         # Smooth error loss is initialized if gradient-based optimization is used.
         self.error_loss_constructor = error_loss_constructor
@@ -236,6 +238,8 @@ class MultilevelSORFModel(Module_):
         self.objects_definition_list = objects_definition_list
 
         self.pickler = None
+
+        self.l2reg_global_opt_method = l2reg_global_opt_method
 
         self.clear_training_set()
         self.init_hyperparameter_optimization_temp_arrs()
@@ -447,8 +451,8 @@ class MultilevelSORFModel(Module_):
             not self.extensive_quantity_shift
         ):
             return
-        self.training_set_possible_nuclear_charges = get_sorted_elements(
-            concatenate_(self.training_nuclear_charges)
+        self.training_set_possible_nuclear_charges = get_possible_nuclear_charges(
+            self.training_nuclear_charges
         )
         print(
             "###Nuclear charges found in training set:", self.training_set_possible_nuclear_charges
@@ -550,24 +554,41 @@ class MultilevelSORFModel(Module_):
         else:
             self.error_loss_guess = new_error_loss_guess
 
-    def init_default_error_loss(self, compromise_coefficient=None):
+    def construct_error_loss_function(self, compromise_coefficient=None):
         if compromise_coefficient is None:
-            if self.hyperparameter_optimizer == "boss":
-                compromise_coefficient = self.boss_compromise_coeff
-            else:
-                compromise_coefficient = self.sd_compromise_coeffs[-1]
-        self.error_loss_function = self.error_loss_constructor(compromise_coefficient)
+            return MSE()
+        return self.error_loss_constructor(compromise_coefficient)
 
-    def find_initial_guesses(self, compromise_coefficient=None):
+    def init_default_error_loss(self, compromise_coefficient=None):
+        self.error_loss_function = self.construct_error_loss_function(compromise_coefficient)
+
+    def find_initial_guesses(self, compromise_coefficient=None, calculate_error_loss=True):
         assert self.training_objects is not None
         # sigmas
         self.find_hyperparameter_guesses()
         self.init_default_error_loss(compromise_coefficient=compromise_coefficient)
-        self.error_loss = self.get_loss_function_ln_hyperparameters(
-            self.get_init_ln_hyperparameters()
-        )
+        if calculate_error_loss:
+            self.error_loss = self.get_loss_function_ln_hyperparameters(
+                self.get_init_ln_hyperparameters()
+            )
         self.copy_hyperparameters_to_initial_guess()
         print("###Ended:", now())
+
+    def simple_guess_quantity_shift(self):
+        """
+        Shift the quantities by mean (if self.intensive_quantity_shift==True), by "dressed atom" values (if self.extensive_quantity_shift==True), or a combination of both (if both corresponding bool attributes equal True).
+        """
+        # TODO: current implementation suboptimal because it recalculates the quantity shift many times throughout a run. Might require revision
+        error_loss_function = self.error_loss_function
+        if error_loss_function is None:
+            error_loss_function = MSE()
+        self.quantity_shift = -self.error_loss_function.find_minimum_linear_errors(
+            self.training_weighted_shift_coeffs,
+            self.training_weighted_quantities,
+            method=self.shift_opt_method,
+            tol=self.grad_opt_tolerance,
+            initial_guess=self.quantity_shift_initial_guess,
+        )
 
     def optimize_quantity_shifts(
         self,
@@ -579,6 +600,9 @@ class MultilevelSORFModel(Module_):
             return
         print("###optimizing quantity shifts:", now())
         self.init_training_weighted_shift_coeffs()
+        if self.simple_quantity_shift:
+            self.simple_guess_quantity_shift()
+            return
         shift_A_mat, shift_b = error_matrices_for_shifts(
             self.training_weighted_shift_coeffs,
             self.training_weighted_quantities,
@@ -732,6 +756,7 @@ class MultilevelSORFModel(Module_):
             ln_l2reg_range,
             total_iterpts=self.ln_relative_l2reg_opt_iterpts,
             opt_name="l2reg_opt",
+            opt_method=self.l2reg_global_opt_method,
         )
         # Finalize minima location with gradient optimization.
         go = minimize(
@@ -959,7 +984,7 @@ class MultilevelSORFModel(Module_):
         self.clear_hyperparameter_optimization_temp_arrs()
 
     def hyperparameter_optimization_start(self, compromise_coefficient):
-        self.find_initial_guesses(compromise_coefficient)
+        self.find_initial_guesses(compromise_coefficient=compromise_coefficient)
         print("###Starting reference loss:", self.error_loss_guess)
         print("###Starting l2reg_diag_ratio:", self.l2reg_diag_ratio_initial_guess)
         print("###Starting hyperparameters:", self.hyperparameter_initial_guesses)
@@ -1059,7 +1084,9 @@ class MultilevelSORFModel(Module_):
             self.hyperparameter_initial_guesses *= exp_(initial_guess_perturbation)
         saved_Z_quantities = {}
         for compromise_coeff in self.sd_compromise_coeffs:
-            self.error_loss_function = self.error_loss_constructor(compromise_coeff)
+            self.error_loss_function = self.construct_error_loss_function(
+                compromise_coefficient=compromise_coeff
+            )
             print("###Compromise coefficient:", compromise_coeff)
             _, saved_Z_quantities = self.run_sd_hyperparameter_optimization_cycle(
                 starting_Z_quantities=saved_Z_quantities
@@ -1101,11 +1128,26 @@ class MultilevelSORFModel(Module_):
         self.leaveoneout_errors = min_leaveoneout_errors
         self.hyperparameter_optimization_final_print("all perturbations")
 
+    def optimize_hyperparameters_short(self, compromise_coefficient=None):
+        """
+        Perform "short" optimization of hyperparameters. Sigma hyperparameters are assigned their initial guess values; if
+        """
+        self.hyperparameters = self.find_hyperparameter_guesses()
+        self.init_default_error_loss(compromise_coefficient=compromise_coefficient)
+        if self.l2reg_diag_ratio is None:
+            self.optimize_quantity_shifts_l2reg()
+        else:
+            if (
+                self.extensive_quantity_shift or self.intensive_quantity_shift
+            ) and self.quantity_shift is None:
+                self.optimize_quantity_shifts()
+
     def optimize_hyperparameters(
         self,
         hyperparameter_optimizer=None,
         initial_guess_perturbations=None,
         initial_hyperparameter_guess=None,
+        compromise_coefficient=None,
     ):
         """
         Optimize hyperpareters with the currently assigned training set.
@@ -1113,18 +1155,25 @@ class MultilevelSORFModel(Module_):
         Args:
             hyperparameter_optimizer (str or None): whether use BOSS ("boss") or steepest descent ("steepest_descent") for hyperparameter optimization. If None (default), use `self.hyperparameter_optimizer` (defined during `__init__`).
             initial_guess_perturbations (numpy.array or None): if not None (default) and steepest descent is used, run `npert` optimization runs where the initial guess of hyperparameter logarithms is pertubed by `initial_guess_perturbations[i,:]` `(i=0,...,npert-1)`.
+            initial_hyperparameter_guess (numpy.array or None): if not None defines hyperparameter guess used.
+            compromise_coefficient (float or None): if `optimize_hyperparameters_short` is used define the corresponding compromise coefficient. Default is None - optimize mean square error.
         """
         if hyperparameter_optimizer is None:
             hyperparameter_optimizer = self.hyperparameter_optimizer
-        if hyperparameter_optimizer == "boss":
-            return self.optimize_hyperparameters_boss(
-                initial_hyperparameter_guess=initial_hyperparameter_guess
-            )
-        if hyperparameter_optimizer == "steepest_descent":
-            return self.optimize_hyperparameters_sd(
-                initial_hyperparameter_guess=initial_hyperparameter_guess,
-                initial_guess_perturbations=initial_guess_perturbations,
-            )
+        match hyperparameter_optimizer:
+            case "boss":
+                return self.optimize_hyperparameters_boss(
+                    initial_hyperparameter_guess=initial_hyperparameter_guess
+                )
+            case "steepest_descent":
+                return self.optimize_hyperparameters_sd(
+                    initial_hyperparameter_guess=initial_hyperparameter_guess,
+                    initial_guess_perturbations=initial_guess_perturbations,
+                )
+            case "short":
+                return self.optimize_hyperparameters_short(
+                    compromise_coefficient=compromise_coefficient
+                )
         raise Exception
 
     def get_leaveoneout_errors(self):
@@ -1225,17 +1274,17 @@ class MultilevelSORFModel(Module_):
         if optimize_shifts_l2reg:
             self.optimize_quantity_shifts_l2reg(weighted_Z_matrix=used_Z_matrix)
         else:
-            # find regularization used.
-            if l2reg is None:
-                if l2reg_diag_ratio is None:
-                    l2reg_diag_ratio = self.l2reg_diag_ratio
-                l2reg = l2reg_diag_ratio * self.av_K_diag_element(Z_matrix=used_Z_matrix)
-
             shifted_weighted_training_quantities = self.get_shifted_weighted_quantities(
                 quantities=training_quantities,
                 nuclear_charges=training_nuclear_charges,
                 importance_multipliers=training_importance_multipliers,
             )
+        if l2reg is None and l2reg_diag_ratio is None:
+            l2reg_diag_ratio = self.l2reg_diag_ratio
+        if initialize_training_plane_sq_distance:
+            # find regularization used.
+            if l2reg is None:
+                l2reg = l2reg_diag_ratio * self.av_K_diag_element(Z_matrix=used_Z_matrix)
             self.init_Z_matrix_decomposition(used_Z_matrix)
             self.alphas = regression_using_Z_SVD(
                 None,
@@ -1245,7 +1294,6 @@ class MultilevelSORFModel(Module_):
                 Z_singular_values=self.Z_singular_values,
                 Z_Vh=self.Z_Vh,
             )
-        if initialize_training_plane_sq_distance:
             return self.initialize_uncertainty_components(
                 used_Z_matrix,
                 l2reg=l2reg,
@@ -1253,6 +1301,13 @@ class MultilevelSORFModel(Module_):
                 Z_U=self.Z_U,
                 Z_singular_values=self.Z_singular_values,
                 Z_Vh=self.Z_Vh,
+            )
+        elif not optimize_shifts_l2reg:
+            self.alphas = regression_using_Z(
+                used_Z_matrix,
+                shifted_weighted_training_quantities,
+                l2reg=l2reg,
+                l2reg_diag_ratio=l2reg_diag_ratio,
             )
 
     def refit(
@@ -1298,6 +1353,34 @@ class MultilevelSORFModel(Module_):
             training_importance_multipliers=self.training_importance_multipliers,
             Z_matrix=self.training_set_Z_matrix,
             optimize_shifts_l2reg=optimize_shifts_l2reg,
+        )
+
+    def train(
+        self,
+        training_objects,
+        training_quantities,
+        training_nuclear_charges=None,
+        init_thread_assignments=False,
+        short_hyperparam_opt=False,
+    ):
+        """
+        Perform hyperparameter optimization and then fit the model.
+        """
+        self.assign_training_set(
+            training_objects,
+            training_quantities,
+            training_nuclear_charges=training_nuclear_charges,
+            init_thread_assignments=init_thread_assignments,
+        )
+        if short_hyperparam_opt:
+            self.optimize_hyperparameters_short()
+        else:
+            self.optimize_hyperparameters()
+        # TODO: not %100 this is needed given how alphas are calculated in self.optimize_hyperparameters
+        self.fit(
+            training_objects,
+            training_quantities,
+            training_nuclear_charges=training_nuclear_charges,
         )
 
     def get_all_predictions(

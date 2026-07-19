@@ -17,12 +17,21 @@ def test_SLATM():
     compounds = CompoundList([Compound(xyz=xyz) for xyz in xyzs])
     all_nuclear_charges = compounds.all_nuclear_charges()
     mbtypes = get_slatm_mbtypes(all_nuclear_charges)
-    compounds.generate_slatm(mbtypes, local=False, test_mode=True)
-    merged_reps = array_(compounds.all_representations())
 
     checksums = {}
 
-    add_checksum_to_dict(checksums, "SLATM", merged_reps, rng, nstack_checksums=8, stacks=32)
+    for alchemy in [True, False]:
+        checksum_rng = int2rng(4)
+        compounds.generate_slatm(mbtypes, local=False, test_mode=True, alchemy=alchemy)
+        merged_reps = array_(compounds.all_representations())
+        add_checksum_to_dict(
+            checksums,
+            f"alchemy_{alchemy}",
+            merged_reps,
+            checksum_rng,
+            nstack_checksums=8,
+            stacks=32,
+        )
     compare_or_create(checksums, "SLATM", max_rel_difference=1.0e-10)
 
 

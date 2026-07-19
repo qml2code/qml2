@@ -31,7 +31,7 @@ from qml2.multilevel_sorf.processed_object_constructors.standard import GlobalRe
 from qml2.representations import generate_coulomb_matrix
 from qml2.representations.calculators import cMBDFCalculator
 from qml2.test_utils.lennard_jones_potential import RandomLJEnsemble
-from qml2.utils import get_sorted_elements, roundup_power2
+from qml2.utils import get_possible_nuclear_charges, roundup_power2
 
 # test ensemble parameters
 natoms_min = 2
@@ -84,13 +84,6 @@ def generate_ensemble_set(nmols, rng, quantity_name):
                 raise Exception("Unknown quantity")
         quantities.append(quantity)
     return ensembles, np.array(quantities), all_nuclear_charges
-
-
-def get_possible_nuclear_charges(all_nuclear_charges):
-    present_nuclear_charges = []
-    for nuclear_charges in all_nuclear_charges:
-        present_nuclear_charges += list(nuclear_charges)
-    return get_sorted_elements(np.array(present_nuclear_charges))
 
 
 def get_cMBDF_calculator(all_nuclear_charges):
@@ -224,6 +217,7 @@ def run_multilevel_sorf_calc(
         rng=model_rng,
         sd_ln_steps=[0.5, 0.25],
         sd_compromise_coeffs=[0.5, 0.25],
+        test_mode=True,
         **other_model_kwargs,
     )
     # create a learning curve while reoptimizing hyperparameters

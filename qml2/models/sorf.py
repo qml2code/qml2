@@ -8,15 +8,14 @@ from ..dimensionality_reduction import (
     project_scale_local_representations,
     project_scale_representations,
 )
-from ..jit_interfaces import array_, concatenate_, dot_, empty_, exp_, mean_
+from ..jit_interfaces import array_, concatenate_, dot_, empty_, exp_
 from ..kernels.sorf import (
     create_sorf_matrices,
     create_sorf_matrices_diff_species,
     generate_local_sorf_processed_input,
     generate_sorf_processed_input,
 )
-from ..math import regression_using_Z_SVD, svd_aligned
-from ..representations import generate_fchl19
+from ..math import regression_using_Z
 from ..utils import (
     check_allocation,
     flatten_to_scalar,
@@ -38,7 +37,7 @@ class SORFModel(KRRModel):
         use_rep_reduction=False,
         npcas=None,
         rng=None,
-        fixed_reductor_signs=False,
+        test_mode=False,
         **other_kwargs,
     ):
         """
@@ -49,7 +48,7 @@ class SORFModel(KRRModel):
             ntransforms (int): number of fast Walsh-Hadamard transforms performed to obtain SORF.
             npcas (int or None): if use_rep_reduction==True defines number of principle components; otherwise defines to which size input representation vectors are padded with zeros. If None taken to equal nfeatures; otherwise should be a power of 2.
             rng (numpy.random._generator.Generator): the random number generator used to generate random components of SORF.
-            fixed_reductor_signs (bool): if True sign of reductor matrices are fixed to make the first row's values positive. Does not affect numerical performance, but prevents occasional "flipping" of eigenvectors signs which obstructs test writing.
+            test_mode (bool): make model output more "RNG-stable" to make test writing easier: 1. replaces sign matrix with a smooth version of RNG output 2. fixes sign of reductor matrices to make the first row's values positive.
         """
         # feature size
         self.basic_init(**other_kwargs)
@@ -62,14 +61,13 @@ class SORFModel(KRRModel):
         self.nfeature_stacks = self.nfeatures // self.npcas
         self.ntransforms = ntransforms
         self.use_rep_reduction = use_rep_reduction
-        self.fixed_reductor_signs = fixed_reductor_signs
         # some temp arrays
         self.temp_reduced_scaled_reps = None
         self.temp_feature_vectors = None
 
         # rng used for feature (and sometimes random reductor) generation
         self.rng = rng
-
+        self.test_mode = test_mode
         self.init_reductors()
         self.init_features()
 
@@ -95,12 +93,16 @@ class SORFModel(KRRModel):
             num_samples=representative_sample_num,
             rng=self.rng,
         )
-        if self.fixed_reductor_signs:
+        if self.test_mode:
             fix_reductor_signs(self.reductor)
 
     def init_features(self):
         self.biases, self.sorf_diags = create_sorf_matrices(
-            self.nfeature_stacks, self.ntransforms, self.npcas, rng=self.rng
+            self.nfeature_stacks,
+            self.ntransforms,
+            self.npcas,
+            rng=self.rng,
+            test_mode=self.test_mode,
         )
 
     def get_sigma_opt_func(self):
@@ -131,25 +133,17 @@ class SORFModel(KRRModel):
             self.training_quantities,
             ln_l2reg_diag_ratio_bounds=self.ln_l2reg_diag_ratio_bounds,
             total_iterpts=self.l2reg_total_iterpts,
-            test_mode=self.test_mode,
+            opt_method=self.hyp_1D_opt_method,
         )
 
     def get_alphas(self, train_feature_vectors, training_quantities=None):
         if training_quantities is None:
             training_quantities = self.training_quantities
-        Z_U, Z_singular_values, Z_Vh = svd_aligned(train_feature_vectors)
-        l2reg = self.l2reg
-        if l2reg is None:
-            assert self.l2reg_diag_ratio is not None
-            l2reg = self.l2reg_diag_ratio * mean_(Z_singular_values)
-
-        self.alphas = regression_using_Z_SVD(
-            None,
-            l2reg,
+        self.alphas = regression_using_Z(
+            train_feature_vectors,
             training_quantities,
-            Z_U=Z_U,
-            Z_singular_values=Z_singular_values,
-            Z_Vh=Z_Vh,
+            l2reg=self.l2reg,
+            l2reg_diag_ratio=self.l2reg_diag_ratio,
         )
 
     def get_training_feature_vectors(self, sigma=None, temp_red_representations=None, out=None):
@@ -161,7 +155,7 @@ class SORFModel(KRRModel):
             self.training_representations, self.reductor, sigma, output=temp_red_representations
         )
         generate_sorf_processed_input(
-            all_red_representations,
+            all_red_representations[: self.ntrain],
             self.sorf_diags,
             self.biases,
             out,
@@ -174,10 +168,9 @@ class SORFModel(KRRModel):
         super().assign_training_set(**kwargs)
         self.calc_reductors(representative_sample_num=representative_sample_num)
 
-    def fit(self, **kwargs):
-        self.assign_training_set(**kwargs)
+    def calc_alphas(self, **kwargs):
         train_feature_vectors = self.get_training_feature_vectors()
-        self.get_alphas(train_feature_vectors)
+        self.get_alphas(train_feature_vectors, **kwargs)
 
     def predict_from_kernel(self, nmols=1, **kwargs):
         predictions = dot_(self.temp_feature_vectors[:nmols, :], self.alphas)
@@ -197,10 +190,10 @@ class SORFModel(KRRModel):
             (nmols, self.nfeatures), output=self.temp_feature_vectors
         )
         generate_sorf_processed_input(
-            self.temp_reduced_scaled_reps,
+            self.temp_reduced_scaled_reps[:nmols],
             self.sorf_diags,
             self.biases,
-            self.temp_feature_vectors,
+            self.temp_feature_vectors[:nmols],
             self.nfeature_stacks,
             self.npcas,
         )
@@ -210,7 +203,6 @@ class SORFModel(KRRModel):
 class SORFLocalModel(SORFModel, KRRLocalModel):
     def __init__(
         self,
-        representation_function=generate_fchl19,
         possible_nuclear_charges=None,
         **other_kwargs,
     ):
@@ -223,7 +215,7 @@ class SORFLocalModel(SORFModel, KRRLocalModel):
         self.nelements = len(self.sorted_elements)
         self.temp_element_ids = None
         self.local_dn = True  # mostly for compatibility with some KRRLocalModel procedures; though also we do use SORF reproducing local_dn kernel here.
-        SORFModel.__init__(self, representation_function=representation_function, **other_kwargs)
+        SORFModel.__init__(self, **other_kwargs)
 
     def readjust_training_temp_arrays(self):
         pass
@@ -279,7 +271,9 @@ class SORFLocalModel(SORFModel, KRRLocalModel):
             rng=self.rng,
         )
         self.check_sorted_elements_reductors(found_sorted_elements)
-        if self.fixed_reductor_signs:
+        fix_reductors_signs(self.all_reductors)
+        #       TODO: replace with self.test_mode!
+        if self.test_mode:
             fix_reductors_signs(self.all_reductors)
 
     def assign_training_set(self, representative_atom_num=1024, **kwargs):
@@ -288,7 +282,12 @@ class SORFLocalModel(SORFModel, KRRLocalModel):
 
     def init_features(self):
         self.all_biases, self.all_sorf_diags = create_sorf_matrices_diff_species(
-            self.nfeature_stacks, self.nelements, self.ntransforms, self.npcas, rng=self.rng
+            self.nfeature_stacks,
+            self.nelements,
+            self.ntransforms,
+            self.npcas,
+            rng=self.rng,
+            test_mode=self.test_mode,
         )
 
     def get_training_feature_vectors(self, sigma=None, temp_red_representations=None, out=None):

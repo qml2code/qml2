@@ -1,9 +1,13 @@
+# Conversion coefficients derived from CODATA 2022 recommended values
+# (NIST: https://physics.nist.gov/cuu/Constants/Table/allascii.txt),
+# combined with the exact definitions Angstrom = 1e-10 m,
+# kcal_th = 4184 J, and 1 D = 1e-21/c C*m.
 conversion_coefficient = {
     None: 1.0,
-    "au_kcal": 627.50960803,
-    "au_eV": 27.211399,
-    "Angstrom_Bohr": 1.8897259886,
-    "Debye_au": 0.393430,
+    "au_kcal": 627.5094740629,  # E_h * N_A / 4184
+    "au_eV": 27.211386245981,  # hartree-electron volt relationship
+    "Angstrom_Bohr": 1.8897261259,  # 1e-10 / a_0
+    "Debye_au": 0.3934302698,  # (1e-21/c) / (e*a_0)
 }
 
 nCartDim = 3

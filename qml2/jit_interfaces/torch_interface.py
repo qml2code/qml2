@@ -4,7 +4,6 @@ from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from torch import get_num_threads, tensor
 
 from ..basic_utils import checked_environ_val
 from .jit_manager import defined_jit_, torch_flag
@@ -16,7 +15,7 @@ torch.set_default_dtype(torch.float64)
 
 multiprocessing_ = torch.multiprocessing
 
-get_num_threads_ = get_num_threads
+get_num_threads_ = torch.get_num_threads
 
 
 # Pool_ = multiprocessing_.Pool
@@ -51,10 +50,14 @@ def recommended_device():
     return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
+def get_default_device():
+    test_array = array_([1])
+    return str(test_array.device)
+
+
 # For conveniently checking where PyTorch puts everything.
 def print_default_device():
-    test_array = array_([1])
-    print(test_array.device)
+    print(get_default_device())
 
 
 # JIT compilation.
@@ -295,28 +298,28 @@ trace_ = torch.trace
 # WARNING: Think more about copy_/copy_detached_ usage.
 @jit_
 def copy_(tensor):
-    return tensor.clone()
+    return torch.tensor.clone()
 
 
 @jit_
 def copy_detached_(tensor: ndarray_):
-    return tensor.detach().clone()
+    return torch.tensor.detach().clone()
 
 
 # for defining constancts
 @jit_
 def const_float_(val: float):
-    return tensor(val, dtype=torch.float64)
+    return torch.tensor(val, dtype=torch.float64)
 
 
 @jit_
 def const_int_(val: int):
-    return tensor(val, dtype=torch.float64)
+    return torch.tensor(val, dtype=torch.float64)
 
 
 @jit_
 def const_bool_(val: bool):
-    return tensor(val, dtype=torch.bool)
+    return torch.tensor(val, dtype=torch.bool)
 
 
 # loops
@@ -332,7 +335,7 @@ isinf_ = torch.isinf
 isnan_ = torch.isnan
 tiny_ = torch.finfo(float_).tiny
 # important constants
-pi_ = tensor(torch.pi)
+pi_ = torch.tensor(torch.pi)
 # array lookup and manipulation
 where_ = torch.where
 
@@ -368,6 +371,8 @@ argmin_ = torch.argmin
 argmax_ = torch.argmax
 sign_ = torch.sign
 floor_ = torch.floor
+unique_ = torch.unique
+gradient_ = torch.gradient
 
 
 @jit_
@@ -386,8 +391,8 @@ def flip_(array: ndarray_, axis: Tuple[int] = (0,)):
 
 
 @jit_
-def sort_(array: ndarray_):
-    return torch.sort(array)[0]
+def sort_(array: ndarray_, axis: int_ = -1):
+    return torch.sort(array, axis)[0]
 
 
 # logical
@@ -424,6 +429,13 @@ cosh_ = torch.cosh
 sinh_ = torch.sinh
 tanh_ = torch.tanh
 log_ = torch.log
+
+
+@jit_
+def cbrt_(val):
+    return val.sign() * val.abs().pow(1 / 3)
+
+
 # Generating grids.
 linspace_ = torch.linspace
 
@@ -451,6 +463,7 @@ svd_ = torch.linalg.svd
 eigh_ = torch.linalg.eigh
 lu_factor_ = torch.linalg.lu_factor
 lstsq_ = torch.linalg.lstsq
+einsum_ = torch.einsum
 
 
 # TODO: KK: looks dirty, needs revision

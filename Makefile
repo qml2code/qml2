@@ -34,6 +34,7 @@ test: test-env
 	$(python) -m pytest -rs ./tests
 
 install:
+	$(python) uninstall_script.py $(pip)
 	$(pip) install .$(OPT)
 
 $(doxygen_main):

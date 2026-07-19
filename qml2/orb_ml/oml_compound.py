@@ -18,11 +18,12 @@ from .representations import (
     gen_propagator_based_coup_mats,
     generate_atom_ao_ranges,
     generate_orb_rep_array,
+    neglect_orb_occ,
 )
 
 # WARNING: THIS INTERFACE HAS PROBLEMS
 try:
-    from .xtb_interface import generate_pyscf_mf_mol as xtb_generate_pyscf_mf_mol
+    from .tblite_interface import generate_pyscf_mf_mol as tblite_generate_pyscf_mf_mol
 except ModuleNotFoundError:
     pass
 # interface to gpu4pyscf
@@ -42,18 +43,15 @@ HF_methods = ["HF", "UHF"]
 
 KS_methods = ["KS", "UKS"]
 
-neglect_orb_occ = 0.1
-
 #   TO-DO rename to "available_orbital_types" now that Boys is also used?
 available_orb_types = ["standard", "HOMO_removed", "LUMO_added", "first_excitation"]
 
 available_localization_procedures = ["Boys", "IBO", "Pipek-Mezey", None]
 
-available_software = ["pySCF", "molpro", "xTB", "tblite"]
+available_software = ["pySCF", "molpro", "tblite"]
 
 available_calc_types = {
     "pySCF": ["HF", "UHF", "KS", "UKS"],
-    "xTB": ["xTB"],
     "tblite": ["GFN2-xTB", "GFN1-xTB"],
     "molpro": ["HF", "UHF"],
 }
@@ -396,9 +394,8 @@ class OML_Compound(Compound):
                     rep_params, self.mo_coeff[spin], self.mo_energy[spin], self.ovlp_mat
                 )
                 coupling_matrices = (self.ovlp_mat, *coupling_matrices)
-            if rep_params.ofd_coup_mats:
+            if rep_params.odf_coup_mats:
                 coupling_matrices = gen_odf_based_coup_mats(
-                    rep_params,
                     self.mo_coeff[spin],
                     self.mo_energy[spin],
                     self.mo_occ[spin],
@@ -418,7 +415,7 @@ class OML_Compound(Compound):
                 self.ovlp_mat,
                 array_(coupling_matrices),
             )
-            if rep_params.ofd_coup_mats and rep_params.orb_en_adj:
+            if rep_params.odf_coup_mats and rep_params.orb_en_adj:
                 for orb_id in range(len(cur_orb_rep_array)):
                     cur_Fock_mat = coupling_matrices[1]
                     cur_orb_rep_array[orb_id].orbital_energy_readjustment(cur_Fock_mat, rep_params)
@@ -469,7 +466,7 @@ class OML_Compound(Compound):
                 mol,
                 pyscf_calc_params=self.pyscf_calc_params,
                 basis_rescaled_orbitals=self.basis_rescaled_orbitals,
-                **self.ao_rescalings_optimization_kwargs
+                **self.ao_rescalings_optimization_kwargs,
             )
         if self.ao_rescalings is not None:
             rescale_mol_basis(
@@ -520,8 +517,10 @@ class OML_Compound(Compound):
         return mf
 
     def generate_pyscf_mf_mol(self, initial_guess_comp=None):
-        if self.software == "xTB":
-            return xtb_generate_pyscf_mf_mol(self)
+        if self.software == "tblite":
+            return tblite_generate_pyscf_mf_mol(
+                self, charge=self.charge, spin=self.spin, solvent=self.smd_solvent
+            )
         #        if self.software == "tblite":
         #            return tblite_generate_pyscf_mf_mol(self)
         if ext_isfile(self.full_pyscf_chkfile):
@@ -539,23 +538,32 @@ class OML_Compound(Compound):
             dump2pkl(output, self.full_pyscf_chkfile)
         return output
 
+    def calc_unrestricted(self):
+        match self.software:
+            case "pySCF":
+                return self.calc_type in unrestricted_methods
+            case "tblite":
+                return False
+            case _:
+                raise Exception("Unknown/untested software")
+
     def alter_mo_occ(self, mo_occ):
-        if self.calc_type not in unrestricted_methods:
-            true_mo_occ = mo_occ
-        else:
+        if self.calc_unrestricted():
             true_mo_occ = mo_occ[0]
+        else:
+            true_mo_occ = mo_occ
         for i, orb_occ in enumerate(true_mo_occ):
             if orb_occ < neglect_orb_occ:
-                if self.calc_type not in unrestricted_methods:
-                    if add_LUMO(self):
-                        mo_occ[i] = 2.0
-                    if remove_HOMO(self):
-                        mo_occ[i - 1] = 0.0
-                else:
+                if self.calc_unrestricted():
                     if add_LUMO(self):
                         mo_occ[0][i] = 1.0
                     if remove_HOMO(self):
                         mo_occ[0][i - 1] = 0.0
+                else:
+                    if add_LUMO(self):
+                        mo_occ[i] = 2.0
+                    if remove_HOMO(self):
+                        mo_occ[i - 1] = 0.0
                 break
         return mo_occ
 
@@ -590,15 +598,14 @@ class OML_Compound(Compound):
                 return orb_id
 
     def adjust_spin_mat_dimen(self, matrices, already_spin_adj=False):
-        if self.calc_type in unrestricted_methods:
+        if self.calc_unrestricted():
             return matrices
-        else:
-            if already_spin_adj and self.spin != 0:
-                return array_(matrices)
-            return array_([matrices for _ in range(self.num_spins())])
+        if already_spin_adj and self.spin != 0:
+            return array_(matrices)
+        return array_([matrices for _ in range(self.num_spins())])
 
     def adjust_spin_mo_occ(self, mo_occ):
-        if self.calc_type in unrestricted_methods:
+        if self.calc_unrestricted():
             return array_(mo_occ)
         if self.num_spins() == 1:
             return self.adjust_spin_mat_dimen(mo_occ)
@@ -610,7 +617,7 @@ class OML_Compound(Compound):
         return new_mo_occ
 
     def num_spins(self):
-        if (self.calc_type in unrestricted_methods) or (self.spin != 0):
+        if self.calc_unrestricted() or self.spin != 0:
             return 2
         else:
             return 1
@@ -676,7 +683,7 @@ class OML_Slater_pair:
         initial_guess_from_first=False,
         comp1=None,
         comp2=None,
-        **first_oml_comp_kwargs
+        **first_oml_comp_kwargs,
     ):
         """
         Defines a pair of Slater determinants representing an eletronic process.
@@ -724,7 +731,7 @@ class OML_Slater_pairs(OML_Slater_pair):
         self,
         other_oml_comp_kwargs_list=[],
         initial_guess_from_first=False,
-        **first_oml_comp_kwargs
+        **first_oml_comp_kwargs,
     ):
         """
         For conveniently managing situations when same initial point is used in several Slater pairs.

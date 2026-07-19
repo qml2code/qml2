@@ -5,6 +5,17 @@ For now only contains interface with BOSS which switches to simple grid optimiza
 """
 from numpy import linspace
 
+from .basic_utils import ExceptionRaisingClass
+
+try:
+    from boss.bo.bo_main import BOMain
+except ModuleNotFoundError:
+    BOMain = ExceptionRaisingClass(
+        ModuleNotFoundError(
+            "Procedure requires installation of aalto-boss via:\npip install aalto-boss"
+        )
+    )
+
 
 def grid_optimize_1D(function, bounds, total_iterpts=32):
     """
@@ -23,16 +34,26 @@ def grid_optimize_1D(function, bounds, total_iterpts=32):
     return min_pos
 
 
-def global_optimize_1D(function, bounds, total_iterpts=32, test_mode=False, opt_name="opt"):
+def global_optimize_1D(
+    function,
+    bounds,
+    total_iterpts=32,
+    iterpts=None,
+    initpts=None,
+    opt_method="boss",
+    opt_name="opt",
+):
     assert len(bounds) == 2
-    if test_mode:
+    if opt_method == "grid":
         return grid_optimize_1D(function, bounds, total_iterpts=total_iterpts)
-    try:
-        from boss.bo.bo_main import BOMain
-    except ModuleNotFoundError:
-        raise ModuleNotFoundError(
-            "Procedure requires installation of aalto-boss via:\npip install aalto-boss"
-        )
+
+    if iterpts is None and initpts is None:
+        iterpts = total_iterpts // 2
+        initpts = total_iterpts // 2
+    else:
+        assert not (
+            iterpts is None or initpts is None
+        ), "Either define `total_iterpts`, or both `iterpts` and `initpts`!"
 
     bo = BOMain(
         function,
@@ -40,8 +61,8 @@ def global_optimize_1D(function, bounds, total_iterpts=32, test_mode=False, opt_
         minfreq=0,
         outfile=f"{opt_name}.out",
         rstfile=f"{opt_name}.rst",
-        iterpts=total_iterpts // 2,
-        initpts=total_iterpts // 2,
+        iterpts=iterpts,
+        initpts=initpts,
     )
     res = bo.run()
     return res.select("x_glmin", -1)[0]
