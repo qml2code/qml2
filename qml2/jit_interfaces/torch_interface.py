@@ -80,6 +80,8 @@ dim0int_array_ = torch.Tensor
 OptionalGenerator_ = Optional[torch.Generator]
 # constructors for standalone
 constr_float_ = float
+# for rounding off
+remainder_ = torch.remainder
 
 
 def is_scalar_(val):
@@ -329,6 +331,12 @@ def prange_(l: int_):
     return list(range(l))
 
 
+def get_range_(**kwargs):
+    # Torch has no real parallel loop, so always iterate serially; the parallel flag accepted by
+    # numba_interface.get_range_ is ignored here for interface parity.
+    return range
+
+
 # special variables
 inf_ = torch.inf
 isinf_ = torch.isinf
@@ -454,6 +462,7 @@ def prod_(t):
 
 
 abs_ = torch.abs
+maximum_ = torch.maximum
 square_ = torch.square
 l2_norm_ = torch.linalg.vector_norm
 

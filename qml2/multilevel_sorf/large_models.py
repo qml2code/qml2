@@ -4,7 +4,7 @@ Routines for conveniently applying SORF for datasets too large to be stored in a
 The future plan is to implementing fine-tuning here.
 """
 from ..jit_interfaces import diag_indices_from_, dot_, mean_, zeros_
-from ..math import cho_solve
+from ..math import cho_solve_from_matrix
 from ..utils import check_allocation
 from .base_constructors import get_dict2class
 from .math import inplace_add_dot_product
@@ -111,7 +111,7 @@ class LargeMSORFModel:
     def assign_alphas(self, alphas):
         self.base_model.alphas = alphas
 
-    def finalize_training(self, solver=cho_solve, overwrite_temp=True):
+    def finalize_training(self, solver=cho_solve_from_matrix, overwrite_temp=True):
         l2reg_diag_ratio = self.get_l2reg_diag_ratio()
         if l2reg_diag_ratio is None:
             l2reg = None

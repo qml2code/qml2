@@ -208,9 +208,27 @@ def dump2pkl(obj, filename: str, compress: bool = False):
     filename : name of the output file
     compress : whether bz2 library is used for compressing the file.
     """
-    output_file = compress_fileopener[compress](filename, "wb")
-    pickle.dump(obj, output_file)
-    output_file.close()
+    # Written to a temporary name beside the target and moved into place rather than opened
+    # at `filename` directly. os.replace is atomic within a filesystem, so a concurrent
+    # reader sees either the old complete file or the new one and never the half-written
+    # state in between. This matters because several SLURM jobs routinely share one savefile
+    # folder and nothing here locks: without it, a reader arriving mid-write gets an
+    # EOFError out of pickle, and two writers on one path can interleave into a file that
+    # stays unreadable afterwards. Racing writers still race, but the loser's file is
+    # replaced whole. The pid in the temporary name keeps two writers off each other's.
+    directory = os.path.dirname(filename)
+    temporary_filename = os.path.join(
+        directory, "." + os.path.basename(filename) + ".tmp." + str(os.getpid())
+    )
+    try:
+        output_file = compress_fileopener[compress](temporary_filename, "wb")
+        pickle.dump(obj, output_file)
+        output_file.close()
+        os.replace(temporary_filename, filename)
+    except BaseException:
+        if os.path.isfile(temporary_filename):
+            os.remove(temporary_filename)
+        raise
 
 
 def loadpkl(filename: str, compress: bool = False):

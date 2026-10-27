@@ -8,7 +8,9 @@ from ..models.krr import KRRLocalModel, KRRModel
 from ..optimizers import BOMain
 from ..utils import flatten_to_scalar
 from .kernels import (
+    ConcatenatedPairKernelInput,
     OML_KernelInput,
+    get_kernel_input,
     is_pair_rep,
     kernel_from_processed_input,
     renormed_smoothened_sigmas,
@@ -32,11 +34,12 @@ class FJKModel(KRRModel):
         rep_params: OML_rep_params = OML_rep_params(),
         base_compound_class=OML_Compound,
         compound_kwargs={},
+        concatenate_components=False,
         shift_quantities_intensive=False,
         shift_quantities_extensive=False,
         possible_nuclear_charges=None,
         relatively_small_val=1.0e-3,
-        ln_l2reg_diag_ratio_bounds=[-24.0, 0.0],
+        ln_l2reg_diag_ratio_bounds=[-25.0, 0.0],
         ln_sigmas_mult_shift_bounds=[-10.0, 10.0],
         ln_global_sigma_bounds=[-3.0, 3.0],
         l2reg_total_iterpts=32,
@@ -60,6 +63,7 @@ class FJKModel(KRRModel):
             rep_params (OML_rep_params): parameters of the orbital representation.
             base_compound_class : i.e. choose between OML_Compound, OML_Slater_pair, or OML_Slater_pairs.
             compound_kwargs : keyword arguments used to generate compound from coordinates and nuclear charges during prediction.
+            concatenate_components (bool): how a Slater pair's two determinants are combined, matching the option of the same name on `multilevel_sorf.processed_object_constructors.fjk.FJKRepresentationCalc`. False (the default) subtracts them, giving `K00 - K01 - K10 + K11`; True keeps them apart, giving `K00 + K11`. Set it to whatever the MSORF model being compared against uses -- the two are different kernels, not two routes to one.
             shift_quantities_intensive (bool): shift quantities by their mean (as in KRRModel).
             shift_quantities_extensive (bool): use "dressed atoms" approach (as in KRRLocalModel), cannot be used together with shift_quantities_intensive.
             possible_nuclear_charges (np.ndarray or None): if not None defines nuclear charges present in chemical space of interest. Only relevant if shift_quantities_extensive=True.
@@ -80,6 +84,7 @@ class FJKModel(KRRModel):
         self.rep_params = rep_params
         self.compound_kwargs = compound_kwargs
         self.base_compound_class = base_compound_class
+        self.concatenate_components = concatenate_components
         # kernel parameters
         self.orb_product = orb_product
         self.norm = norm
@@ -120,6 +125,12 @@ class FJKModel(KRRModel):
     def check_ntrain_consistency(self):
         assert self.ntrain == len(self.training_compounds)
 
+    def kernel_input(self, initialized_compounds):
+        """The processed input whose kernel matches this model's pair treatment."""
+        return get_kernel_input(
+            initialized_compounds, concatenate_components=self.concatenate_components
+        )
+
     def get_initialized_compound(self, compound: OML_Compound):
         compound.generate_orb_reps(rep_params=self.rep_params)
         return compound
@@ -155,7 +166,7 @@ class FJKModel(KRRModel):
             self.adjust_init_quant_shift()
         self.ntrain = len(self.training_quantities)
         if training_kernel_input is None:
-            training_kernel_input = OML_KernelInput(self.training_compounds)
+            training_kernel_input = self.kernel_input(self.training_compounds)
         self.training_kernel_input = training_kernel_input
 
         self.readjust_training_temp_arrays()
@@ -249,7 +260,9 @@ class FJKModel(KRRModel):
             return KRRModel.get_shifted_prediction(self, prediction, **kwargs)
         return prediction
 
-    def predict_from_kernel_input(self, kernel_input: OML_KernelInput, **kwargs):
+    def predict_from_kernel_input(
+        self, kernel_input: OML_KernelInput | ConcatenatedPairKernelInput, **kwargs
+    ):
         self.temp_kernel = kernel_from_processed_input(
             self.training_kernel_input,
             kernel_input,
@@ -263,7 +276,7 @@ class FJKModel(KRRModel):
         init_compounds = self.get_all_initialized_compounds(
             compounds, suppress_openmp=suppress_openmp, num_procs=num_procs
         )
-        kernel_input = OML_KernelInput(init_compounds)
+        kernel_input = self.kernel_input(init_compounds)
         if self.shift_quantities_extensive:
             if is_pair_rep(init_compounds[0]):
                 all_nuclear_charges = [pair.comps[0].nuclear_charges for pair in compounds]
@@ -278,7 +291,7 @@ class FJKModel(KRRModel):
 
     def predict_from_compound(self, input_compound):
         init_compound = self.get_initialized_compound(input_compound)
-        kernel_input = OML_KernelInput([init_compound])
+        kernel_input = self.kernel_input([init_compound])
         return self.predict_from_kernel_input(
             kernel_input, all_nuclear_charges=[init_compound.nuclear_charges]
         )[0]

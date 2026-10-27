@@ -13,7 +13,7 @@ from ..kernels.gradient_sorf import (
     generate_local_force_sorf_processed_input,
     generate_local_force_sorf_product_processed_input,
 )
-from ..math import lu_solve
+from ..math import lu_solve_from_matrix
 from ..utils import (
     check_allocation,
     get_atom_environment_ranges,
@@ -38,7 +38,7 @@ class SORFLocalForcesModel(SORFLocalModel, OQMLModel):
         energy_importance=None,
         clean_Z_matrix=True,
         use_lstsq=False,
-        **kwargs
+        **kwargs,
     ):
         # Divide kwargs by what is relevant for the two parents and
         # initialize according to it.
@@ -211,7 +211,7 @@ class SORFLocalForcesModel(SORFLocalModel, OQMLModel):
             self.get_alphas(self.temp_Z_matrix.T, used_fitted_vals)
         else:
             train_kernel, rhs = self.train_kernel_rhs_from_dumped_Z(used_fitted_vals)
-            self.get_alphas_w_lambda(train_kernel, rhs, solver=lu_solve)
+            self.get_alphas_w_lambda(train_kernel, rhs, solver=lu_solve_from_matrix)
         self.run_clean_Z_matrix()
 
     def train_from_rep_lists(

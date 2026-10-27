@@ -3,6 +3,7 @@
 from typing import Tuple, Union
 
 from .jit_interfaces import (
+    abs_,
     dot_,
     elements_where_,
     empty_,
@@ -40,7 +41,7 @@ def get_rand_reductor(nreps: int_, npcas: int_, rng=None):
 @jit_
 def get_reductor(representations, npcas: int_, num_samples: int_ = 1024, rng=None):
     nreps = representations.shape[1]
-    if (nreps < npcas) or (num_samples < npcas):
+    if nreps < npcas:
         # TODO KK: I suspect creating a random reductor should make the procedure less
         # demanding w.r.t. ntransforms, but never checked it.
         # Just pad with zeros. Useful for fitting into Hadamard transform.
@@ -55,18 +56,15 @@ def get_reductor(representations, npcas: int_, num_samples: int_ = 1024, rng=Non
     else:
         permuted_indices = permuted_range_(representations.shape[0])
         sample_indices = permuted_indices[:num_samples]
-        true_nsamples = sample_indices.shape[0]
         used_representations = representations[sample_indices]
+    true_nsamples = used_representations.shape[0]
 
     if true_nsamples >= npcas:
         eigvecs, eigvals, _ = svd_(used_representations.T, full_matrices=False)
     else:
         print("WARNING: sample representation vectors insufficient to generate valid reductor.")
         # KK: such a situation only occures in tests, but a placeholder should still be valuable.
-        # TODO: double-check it actually works as intended.
-        eigvecs, eigvals, _ = svd_(
-            dot_(used_representations.T, used_representations), full_matrices=False
-        )
+        return get_rand_reductor(nreps, npcas, rng=rng)
 
     all_eigvals_sum = sum_(eigvals)
 
@@ -201,9 +199,17 @@ def project_scale_local_representations(
 
 def fix_reductor_signs(reductor):
     """
-    Make first element of each reductor's row positive. Introduced for test output consistency.
+    Fix the sign of each reductor column. Introduced for test output consistency.
+
+    An SVD fixes each singular vector only up to sign, so two runs on equivalent input can
+    return columns that differ by a factor of -1 and compare unequal. The convention here is
+    to make each column's LARGEST-MAGNITUDE element positive: keying on the first element
+    instead is arbitrary whenever that element is near zero, where its sign carries no
+    information and flips on numerical noise.
     """
-    reductor *= sign_(reductor[0])
+    for vec_id in range(reductor.shape[1]):
+        max_id = abs_(reductor[:, vec_id]).argmax()
+        reductor[:, vec_id] *= sign_(reductor[max_id, vec_id])
 
 
 def fix_reductors_signs(reductors):

@@ -11,6 +11,7 @@ from conftest import (
     add_reshaped_to_dict,
     compare_or_create,
     comparison_sanity_check,
+    int2rng,
     kwargs_to_oneliner,
     str2rng,
 )
@@ -183,6 +184,24 @@ def get_parameter_list(
     return parameter_list
 
 
+def get_random_group_ids(representations, seed):
+    rng = int2rng(seed)
+    ntrain = len(representations)
+    group_ids = []
+    shuffled_indices = list(range(ntrain))
+    rng.shuffle(shuffled_indices)
+    lb = 0
+    ub = 0
+    while ub < ntrain:
+        # int2rng gives a numpy Generator, whose integers() excludes the upper bound,
+        # so endpoint=True is needed to keep group sizes in 1..4.
+        ub += rng.integers(1, 4, endpoint=True)
+        true_ub = min(ub, ntrain)
+        group_ids.append(shuffled_indices[lb:true_ub])
+        lb = ub
+    return group_ids
+
+
 def run_multilevel_sorf_calc(
     train_representations,
     train_quantities,
@@ -192,17 +211,18 @@ def run_multilevel_sorf_calc(
     test_nuclear_charges,
     function_definition_list,
     parameter_list,
+    use_train_group_ids=False,
     extensive_quantity_shift=False,
     intensive_quantity_shift=False,
     init_thread_assignments=False,
-    full_optimization_cycle=True,
+    full_learning_curve=True,
     lc_hyperparameter_reoptimization=True,
     **other_model_kwargs,
 ):
     """
     NOTE: changing values of `init_thread_assigments` and `sd_reuse_Z_derivatives` (the latter is part of `other_model_kwargs`) should not change the outcome of the routine.
     """
-    # TODO K.Karan. 2025.07.06: introduced full_optimization_cycle option to decrease cost of the test further, realized it only works correctly for the experimental-sorf1 branch (estimated to merge with main in August 2025). Option should be revisited at some point this year.
+    # TODO K.Karan. 2025.07.06: introduced full_learning_curve option to decrease cost of the test further, realized it only works correctly for the experimental-sorf1 branch (estimated to merge with main in August 2025). Option should be revisited at some point this year.
 
     # to control RNG inside BOSS, which is used for hyperparameter optimization
     np.random.seed(global_RNG_seed)
@@ -218,9 +238,12 @@ def run_multilevel_sorf_calc(
         sd_ln_steps=[0.5, 0.25],
         sd_compromise_coeffs=[0.5, 0.25],
         test_mode=True,
+        # Makes every BOSS run in this routine reproducible, not just the loss comparison
+        # below: BOSS otherwise continues the global numpy RNG stream between invocations.
+        boss_seed=global_RNG_seed,
         **other_model_kwargs,
     )
-    # create a learning curve while reoptimizing hyperparameters
+    # the minor subset is what hyperparameters are optimized on
     ntrain = len(train_representations)
     minor_train_representations = train_representations[: ntrain // 2]
     minor_train_quantities = train_quantities[: ntrain // 2]
@@ -228,15 +251,25 @@ def run_multilevel_sorf_calc(
         minor_train_nuclear_charges = None
     else:
         minor_train_nuclear_charges = train_nuclear_charges[: ntrain // 2]
+    # The grouping is assigned together with the MINOR training set below, so it has to index
+    # that one: built over the full set it would fail assign_training_set's partition check.
+    if use_train_group_ids:
+        full_learning_curve = False
+        train_group_ids = get_random_group_ids(minor_train_representations, 1)
+    else:
+        train_group_ids = None
     checksums = {}
-    if full_optimization_cycle:
-        if not lc_hyperparameter_reoptimization:
-            model.assign_training_set(
-                minor_train_representations,
-                minor_train_quantities,
-                training_nuclear_charges=minor_train_nuclear_charges,
-            )
-            model.optimize_hyperparameters()
+    if not (full_learning_curve and lc_hyperparameter_reoptimization):
+        model.assign_training_set(
+            minor_train_representations,
+            minor_train_quantities,
+            training_group_ids=train_group_ids,
+            training_nuclear_charges=minor_train_nuclear_charges,
+        )
+        model.optimize_hyperparameters()
+
+    # build a learning curve, reoptimizing hyperparameters per subset if asked to
+    if full_learning_curve:
         mean_MAE, std_MAE = model.learning_curve(
             train_representations,
             train_quantities,
@@ -253,14 +286,6 @@ def run_multilevel_sorf_calc(
         # include the MAE info into checksum
         add_reshaped_to_dict(checksums, "mean_MAEs", array_(mean_MAE))
         add_checksum_to_dict(checksums, "std_MAEs", array_(std_MAE), nstack_checksums=1)
-    else:
-        model.assign_training_set(
-            minor_train_representations,
-            minor_train_quantities,
-            training_nuclear_charges=minor_train_nuclear_charges,
-        )
-        model.hyperparameters = model.find_hyperparameter_guesses()
-        model.optimize_quantity_shifts_l2reg()
     # add (sigma) hyperparameters to the checksum too
     add_reshaped_to_dict(checksums, "sd_hyperparameters", model.hyperparameters)
     # NOTE K.Karan.: I think l2 regularization and quantity shifts obtained in the end of an optimization loop can be prone to instabilities, making them unsuitable for this kind of benchmarking. Hence l2reg and shift optimizations are tested separately later.
@@ -280,6 +305,12 @@ def run_multilevel_sorf_calc(
     )
     guess_hyperparameters = model.get_initial_hyperparameter_guesses()
     ln_guess_hyperparameters = log_(guess_hyperparameters)
+    # NOTE: the two calls below agree only because the model carries boss_seed. Both re-run
+    # optimize_quantity_shifts_l2reg internally, whose global search is BOSS; unseeded, the
+    # second call continues the RNG stream, picks a slightly different ln_l2reg, and the
+    # comparison fails at ~1e-5. The scipy l2reg refinement used to mask that -- mask, not
+    # prevent: even with it the two calls choose different ln_l2reg and the loss merely happened
+    # to be insensitive there, so l2reg_local_opt_method=None exposed it.
     loss1 = model.get_loss_function_ln_hyperparameters(ln_guess_hyperparameters)
     loss2, loss_gradient, Z_quantities = model.get_loss_function_ln_hyperparameters(
         ln_guess_hyperparameters, gradient=True, return_Z_matrices=True
@@ -407,6 +438,39 @@ def test_cMBDF_multilevel_sorf():
                 "sd_reuse_Z_derivatives": True,
             },
         ),
+        (
+            "simple_ext_shift_no_l2reg_grad",
+            {
+                "extensive_quantity_shift": True,
+                "l2reg_local_opt_method": None,
+                "sd_reuse_Z_derivatives": False,
+                "simple_quantity_shift": True,
+            },
+        ),
+        (
+            "ext_shift_no_l2reg_grad",
+            {
+                "extensive_quantity_shift": True,
+                "l2reg_local_opt_method": None,
+                "sd_reuse_Z_derivatives": False,
+            },
+        ),
+        (
+            "simple_ext_shift",
+            {
+                "extensive_quantity_shift": True,
+                "sd_reuse_Z_derivatives": False,
+                "simple_quantity_shift": True,
+            },
+        ),
+        (
+            "simple_ext_shift_w_group_ids",
+            {
+                "extensive_quantity_shift": True,
+                "simple_quantity_shift": True,
+                "use_train_group_ids": True,
+            },
+        ),
     ]
     run_several_multilevel_sorf_calcs(
         "MSORF_cMBDF",
@@ -443,6 +507,39 @@ def test_CM_multilevel_sorf():
                 "init_thread_assignments": False,
                 "sd_reuse_Z_derivatives": False,
                 "lc_hyperparameter_reoptimization": False,
+            },
+        ),
+        (
+            "simple_int_shift_no_l2reg_grad",
+            {
+                "intensive_quantity_shift": True,
+                "l2reg_local_opt_method": None,
+                "simple_quantity_shift": True,
+                "sd_reuse_Z_derivatives": True,
+            },
+        ),
+        (
+            "int_shift_no_l2reg_grad",
+            {
+                "intensive_quantity_shift": True,
+                "l2reg_local_opt_method": None,
+                "sd_reuse_Z_derivatives": True,
+            },
+        ),
+        (
+            "simple_int_shift",
+            {
+                "intensive_quantity_shift": True,
+                "sd_reuse_Z_derivatives": True,
+                "simple_quantity_shift": True,
+            },
+        ),
+        (
+            "simple_int_shift_w_group_ids",
+            {
+                "intensive_quantity_shift": True,
+                "l2reg_local_opt_method": None,
+                "use_train_group_ids": True,
             },
         ),
     ]

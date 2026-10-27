@@ -26,6 +26,7 @@ from ..jit_interfaces import (
     concatenate_,
     copy_,
     default_rng_,
+    dint_,
     dot_,
     exp_,
     inf_,
@@ -47,7 +48,13 @@ from ..models.loss_functions import MAE, MSE, SquaredSelfConsistentLogCosh
 from ..models.math import f_winf, ninv_f, possible_numerical_exceptions
 from ..models.property_shifts import get_shift_coeffs
 from ..models.sorf_hyperparameter_optimization import (
+    fold_test_index_list,
     get_stat_factors,
+    group_errors_from_precalc,
+    group_loss_der_wrt_features,
+    group_loss_l2reg_der,
+    group_loss_multipliers,
+    group_stat_matrices,
     leaveoneout_eigenvalue_multipliers,
     leaveoneout_errors,
     leaveoneout_errors_from_precalc,
@@ -69,6 +76,7 @@ from .math import (
     get_model_uncertainty_fitted_ratios,
     get_training_plane_sq_distance_components,
     get_training_plane_sq_distances,
+    group_error_matrices_for_shifts,
 )
 from .pickle import Pickler
 from .sorf_calculation import MultilevelSORF
@@ -93,13 +101,13 @@ class MultilevelSORFModel(Module_):
         hyperparameters=None,
         l2reg_diag_ratio=None,
         shift_opt_method="L-BFGS-B",
-        ln_l2reg_opt_method="SLSQP",
+        l2reg_local_opt_method="SLSQP",
         grad_opt_tolerance=1e-9,
         hyperparameter_optimizer="steepest_descent",
         error_loss_constructor=SquaredSelfConsistentLogCosh,
         error_loss_kwargs={},
-        ln_relative_l2reg_range=[-25.0, 0.0],
-        ln_relative_l2reg_opt_iterpts=32,
+        ln_l2reg_diag_ratio_bounds=[-25.0, 0.0],
+        l2reg_total_iterpts=32,
         boss_kernel="rbf",
         boss_ln_sigma_bounds_range=3.0,
         boss_compromise_coeff=None,
@@ -110,6 +118,7 @@ class MultilevelSORFModel(Module_):
         boss_assert_gpu=False,
         boss_num_printed_glmin=4,
         boss_use_grad=False,
+        boss_seed=None,
         sd_ln_steps=[0.5, 0.25, 0.125],
         sd_compromise_coeffs=[0.5, 0.25, 0.125],
         sd_reuse_Z_derivatives=True,
@@ -135,14 +144,14 @@ class MultilevelSORFModel(Module_):
             hyperparameters (np.array): (hyperparameter) array of sigma hyperparameters.
             l2reg_diag_ratio (np.array): (hyperparameter) ratio of l2-regularization coefficient (l2reg) and average diagonal element of the K matrix.
             shift_opt_method (str): method scipy.optimize uses to optimize shifts. Default is L-BFGS-B.
-            ln_l2reg_opt_method (str): while log(l2reg) is pre-optimized globally by BOSS, the value is finalized with scipy.optimize and the method determined by this argument. Default is "SLSQP".
+            l2reg_local_opt_method (str or None): while log(l2reg) is pre-optimized globally (see `l2reg_global_opt_method`), the value is finalized with scipy.optimize and the method determined by this argument. Default is "SLSQP". None SKIPS that gradient refinement and keeps the global optimum; worth passing alongside `training_group_ids`, where each extra evaluation costs a Cholesky solve per group rather than one elementwise multiplication.
             grad_opt_tolerance (float): loss gradient tolerance during gradient optimization steps with scipy.optimize (default 1.e-9).
             processed_object_constructor: if the model's input needs extra processing place processing function here (see .processed_object_constructors section).
             hyperparameter_optimizer (str): optimize hyperparameters with steepest descent ("steepest_descent") or BOSS ("boss"). Default is "steepest_descent".
             error_loss_constructor: which homogeneous loss function is used. Default is SquaredSelfConsistentLogCosh.
             error_loss_kwargs (dict): additional keyword arguments of homogeneous loss constructor.
-            ln_relative_l2reg_range (list): range of values in which BOSS pre-optimizes logarithm of the ratio of l2reg and average K diagonal value. Default is `[-25.0, 0.0]`.
-            ln_relative_l2reg_opt_iterpts (int): number of loss function calls during BOSS pre-optimization of l2reg. Default is 32.
+            ln_l2reg_diag_ratio_bounds (list): bounds within which the logarithm of the ratio of l2reg and the average K diagonal element is pre-optimized globally. Same quantity and name as in `qml2.models` (KRR/SORF). Default is `[-25.0, 0.0]`.
+            l2reg_total_iterpts (int): number of loss function calls during BOSS pre-optimization of l2reg. Default is 32.
             boss_kernel (str): name of kernel used by BOSS. Default is "rbf".
             boss_ln_sigma_bounds_range (float): BOSS optimization of sigmas is performed over (boss_ln_sigma_bounds_range)-neighborhood of initial guesses. Default is 3.0.
             boss_compromise_coeff (float): compromise coefficient of the loss function during BOSS sigma optimization. Default is None (optimize MSE).
@@ -153,6 +162,7 @@ class MultilevelSORFModel(Module_):
             boss_assert_gpu (bool): double-check that BOSS can use GPU. Default is False.
             boss_num_printed_glmin (int): how many predicted minima BOSS prints in the end of sigmas optimization.
             boss_use_grad (bool): whether BOSS uses gradients during optimization. Default is False.
+            boss_seed (int or None): seed handed to BOSS, which applies it as `np.random.seed`. Default is None - BOSS continues the global RNG stream, so two otherwise identical optimizations can return slightly different optima. Set it when repeated evaluations have to agree (e.g. comparing a loss computed with and without gradients). Covers both BOSS uses: the 1D l2reg search and the sigma optimization. NOTE: BOSS does not propagate the seed to GPy, so this strongly reduces rather than eliminates run-to-run variation.
             sd_ln_steps (list): step magnitudes used during steepest descent optimization in space of logarithms of sigmas. Default is `[0.5, 0.25, 0.125]`.
             sd_compromise_coeffs (list): compromise coefficient values used during steepest descent optimization in space of logarithms of sigmas; None value corresponds to optimizing mean square error. Default is `[0.5, 0.25, 0.125]`.
             sd_reuse_Z_derivatives (bool): if False, decrease memory usage (at the expense of CPU time) by not storing derivatives of Z matrix w.r.t. sigmas. Default is True.
@@ -196,14 +206,17 @@ class MultilevelSORFModel(Module_):
 
         # Thorough gradient optimization appears for shift optimization
         self.shift_opt_method = shift_opt_method
-        self.ln_l2reg_opt_method = ln_l2reg_opt_method
+        self.l2reg_local_opt_method = l2reg_local_opt_method
+        # Set by assign_training_set; None means the leave-one-out criterion.
+        self.training_group_ids = None
+        self.group_stat_matrices = None
         self.grad_opt_tolerance = grad_opt_tolerance
 
         assert hyperparameter_optimizer in implemented_hyperparameters_optimizers
         self.hyperparameter_optimizer = hyperparameter_optimizer
 
-        self.ln_relative_l2reg_range = ln_relative_l2reg_range
-        self.ln_relative_l2reg_opt_iterpts = ln_relative_l2reg_opt_iterpts
+        self.ln_l2reg_diag_ratio_bounds = ln_l2reg_diag_ratio_bounds
+        self.l2reg_total_iterpts = l2reg_total_iterpts
 
         # hyperparameter optimization options with boss
         self.boss_kernel = boss_kernel
@@ -217,6 +230,7 @@ class MultilevelSORFModel(Module_):
         self.boss_assert_gpu = boss_assert_gpu
         self.boss_num_printed_glmin = boss_num_printed_glmin
         self.boss_use_grad = boss_use_grad
+        self.boss_seed = boss_seed
 
         if boss_cycle_iterpts is None:
             if self.boss_use_grad:
@@ -345,6 +359,7 @@ class MultilevelSORFModel(Module_):
         training_quantities,
         training_nuclear_charges=None,
         training_importance_multipliers=None,
+        training_group_ids=None,
         init_thread_assignments=False,
     ):
         """
@@ -355,6 +370,7 @@ class MultilevelSORFModel(Module_):
             training_quantities (numpy.array): array of training set quantities of interest.
             training_nuclear_charges (list): list of numpy arrays of training set molecules' nuclear charges; used if extensive_quantity_shift is True. Default is None.
             training_importance_multipliers (numpy.array): weights for individual points during regression (not properly untested).
+            training_group_ids (list or None): list of lists, each naming the training-point indices of one group (scaffolds, in practice). Assigning it switches the hyperparameter criterion from leave-one-out to leave-one-GROUP-out: every point still contributes one held-out error, but it is the error obtained with that point's whole group removed, and the resulting Ntrain errors are pooled and fed to the loss exactly as the leave-one-out errors were. That pooling is micro-averaging -- each MOLECULE weighted equally, and hence each group in proportion to its size. The groups must partition the training set. Default is None, i.e. leave-one-out.
             init_thread_assignments (bool): if True generate estimated CPU times for feature calculations with and without gradients, which are then used to optimize parallelization performance.
         """
         self.clear_training_set_temp()
@@ -365,8 +381,41 @@ class MultilevelSORFModel(Module_):
         self.training_set_size = len(self.training_objects)
         self.training_weighted_quantities = self.mult_by_importance(self.training_quantities)
         assert self.training_weighted_quantities.shape[0] == self.training_set_size
+        self.init_training_group_ids(training_group_ids)
         if init_thread_assignments:
             self.init_training_thread_assignments()
+
+    def init_training_group_ids(self, training_group_ids):
+        """Store and validate the leave-one-group-out grouping.
+
+        The groups must PARTITION the training set: "one held-out error per training point"
+        is only well defined if every point belongs to exactly one group. A point in two
+        groups would be written twice and a point in none would be left uninitialized, and
+        neither shows up as anything but a slightly odd loss.
+        """
+        if training_group_ids is None:
+            self.training_group_ids = None
+            return
+        self.training_group_ids = fold_test_index_list(training_group_ids)
+        covered = zeros_((self.training_set_size,), dtype=dint_)
+        for group in self.training_group_ids:
+            assert (
+                max_(group) < self.training_set_size and min_(group) >= 0
+            ), "training_group_ids index outside the training set"
+            covered[group] += 1
+        assert max_(covered) == 1 and min_(covered) == 1, (
+            "training_group_ids must partition the training set; got a point covered "
+            "%d times and another %d times" % (int(max_(covered)), int(min_(covered)))
+        )
+        print(
+            "###leave-one-group-out with",
+            len(self.training_group_ids),
+            "groups; sizes",
+            "min",
+            int(min_(array_([len(g) for g in self.training_group_ids]))),
+            "max",
+            int(max_(array_([len(g) for g in self.training_group_ids]))),
+        )
 
     def calc_Z_matrix(
         self,
@@ -447,6 +496,27 @@ class MultilevelSORFModel(Module_):
         )
 
     def init_training_set_possible_nuclear_charges(self):
+        """The element basis of the extensive ("dressed atom") shift, derived from the TRAINING SET.
+
+        Deliberately not the `possible_nuclear_charges` the representation calculators are given:
+        that one is fixed independently of any split (the paper scripts build it over every
+        molecule, train and test alike) because the feature layout must not change between fits.
+        The shift basis is a different object and is rebuilt per assigned training set, so a
+        learning-curve point of 50 molecules fits dressed-atom coefficients for exactly the
+        elements those 50 molecules contain.
+
+        An element that the representation supports but the training subset never sees therefore
+        gets NO column here -- rather than a column whose coefficient is fitted to zero. The
+        observable behaviour is the same, because `element_counts` (see
+        `qml2.models.property_shifts`) counts only the charges in this basis and silently ignores
+        the rest: at prediction time a test molecule's atoms of an unseen element contribute
+        zero to its shift, and nothing raises. Worth stating because "no column" and "zero
+        coefficient" are easy to conflate, and because the silent drop means a training subset
+        that misses a rare element fails softly, as a bias, not loudly.
+
+        `clear_training_set_temp` nulls this alongside `training_weighted_shift_coeffs`, so the
+        `is not None` guards below cache within one training set and never across two.
+        """
         if (self.training_set_possible_nuclear_charges is not None) or (
             not self.extensive_quantity_shift
         ):
@@ -603,14 +673,25 @@ class MultilevelSORFModel(Module_):
         if self.simple_quantity_shift:
             self.simple_guess_quantity_shift()
             return
-        shift_A_mat, shift_b = error_matrices_for_shifts(
-            self.training_weighted_shift_coeffs,
-            self.training_weighted_quantities,
-            self.Z_U,
-            self.eigenvalue_multipliers,
-            self.stat_factors,
-            self.transformed_inv_K_Z,
-        )
+        if self.training_group_ids is None:
+            shift_A_mat, shift_b = error_matrices_for_shifts(
+                self.training_weighted_shift_coeffs,
+                self.training_weighted_quantities,
+                self.Z_U,
+                self.eigenvalue_multipliers,
+                self.stat_factors,
+                self.transformed_inv_K_Z,
+            )
+        else:
+            shift_A_mat, shift_b = group_error_matrices_for_shifts(
+                self.training_weighted_shift_coeffs,
+                self.training_weighted_quantities,
+                self.Z_U,
+                self.eigenvalue_multipliers,
+                self.group_stat_matrices,
+                self.training_group_ids,
+                self.transformed_inv_K_Z,
+            )
         self.quantity_shift = self.error_loss_function.find_minimum_linear_errors(
             shift_A_mat,
             shift_b,
@@ -643,9 +724,21 @@ class MultilevelSORFModel(Module_):
         self.eigenvalue_multipliers = leaveoneout_eigenvalue_multipliers(
             self.Z_singular_values, self.l2reg
         )
-        self.stat_factors, self.transformed_inv_K_Z = get_stat_factors(
-            self.Z_U, self.eigenvalue_multipliers
-        )
+        if self.training_group_ids is None:
+            self.stat_factors, self.transformed_inv_K_Z = get_stat_factors(
+                self.Z_U, self.eigenvalue_multipliers
+            )
+            self.group_stat_matrices = None
+        else:
+            # The block analogue: one (I - P_VV) matrix per group instead of one scalar
+            # stat factor per point. transformed_inv_K_Z is the same object either way --
+            # get_stat_factors returns it as a by-product -- and is what reproduces the
+            # training quantities below.
+            self.group_stat_matrices = group_stat_matrices(
+                self.Z_U, self.eigenvalue_multipliers, self.training_group_ids
+            )
+            self.transformed_inv_K_Z = self.eigenvalue_multipliers * self.Z_U
+            self.stat_factors = None
         self.optimize_quantity_shifts()
         self.shifted_training_weighted_quantities = self.get_shifted_weighted_training_quantities()
         self.transformed_alphas_rhs = dot_(self.shifted_training_weighted_quantities, self.Z_U)
@@ -655,11 +748,22 @@ class MultilevelSORFModel(Module_):
             self.transformed_alphas_rhs * self.eigenvalue_multipliers / self.Z_singular_values,
         )
 
-        self.leaveoneout_errors = leaveoneout_errors_from_precalc(
-            self.reproduced_quantities,
-            self.shifted_training_weighted_quantities,
-            self.stat_factors,
-        )
+        # Named leaveoneout_errors in both cases: under grouping these are the
+        # leave-one-GROUP-out errors, still one per training point, and everything
+        # downstream -- the loss, the shifts, the reported MAE -- consumes them identically.
+        if self.training_group_ids is None:
+            self.leaveoneout_errors = leaveoneout_errors_from_precalc(
+                self.reproduced_quantities,
+                self.shifted_training_weighted_quantities,
+                self.stat_factors,
+            )
+        else:
+            self.leaveoneout_errors = group_errors_from_precalc(
+                self.reproduced_quantities,
+                self.shifted_training_weighted_quantities,
+                self.group_stat_matrices,
+                self.training_group_ids,
+            )
 
         if not gradient:
             self.error_loss = self.error_loss_function(self.leaveoneout_errors)
@@ -676,16 +780,33 @@ class MultilevelSORFModel(Module_):
             self.leaveoneout_errors
         )
 
-        loss_grad = leaveoneout_loss_l2reg_der(
-            self.eigenvalue_multipliers,
-            self.Z_singular_values,
-            self.error_loss_error_ders,
-            self.Z_U,
-            self.reproduced_quantities,
-            self.transformed_alphas_rhs,
-            self.stat_factors,
-            self.shifted_training_weighted_quantities,
-        )
+        if self.training_group_ids is None:
+            loss_grad = leaveoneout_loss_l2reg_der(
+                self.eigenvalue_multipliers,
+                self.Z_singular_values,
+                self.error_loss_error_ders,
+                self.Z_U,
+                self.reproduced_quantities,
+                self.transformed_alphas_rhs,
+                self.stat_factors,
+                self.shifted_training_weighted_quantities,
+            )
+        else:
+            self.group_loss_multipliers = group_loss_multipliers(
+                self.group_stat_matrices,
+                self.training_group_ids,
+                self.error_loss_error_ders,
+                self.training_set_size,
+            )
+            loss_grad = group_loss_l2reg_der(
+                self.eigenvalue_multipliers,
+                self.Z_singular_values,
+                self.Z_U,
+                self.leaveoneout_errors,
+                self.group_loss_multipliers,
+                self.training_group_ids,
+                self.transformed_alphas_rhs,
+            )
         # convert to ln_l2reg derivative
         loss_grad *= self.l2reg
         print(
@@ -707,6 +828,22 @@ class MultilevelSORFModel(Module_):
     def init_Z_matrix_decomposition(
         self, weighted_Z_matrix=None, Z_U=None, Z_singular_values=None, Z_Vh=None
     ):
+        """Aligned SVD of the weighted feature matrix -- the prerequisite for any l2reg work.
+
+        `get_loss_function_ln_l2reg` and everything built on it read `Z_U`,
+        `Z_singular_values` and `Z_Vh` off self rather than taking a feature matrix, which is
+        what makes sweeping l2reg cheap: the decomposition is paid for once and every l2reg
+        then costs an elementwise multiplication. Anything driving the l2reg loss directly
+        (finite-difference checks, for instance) must call this first, or the loss reads stale
+        or absent factors.
+
+        `optimize_quantity_shifts_l2reg` calls it for you; callers that bypass that entry point
+        do not get it for free.
+
+        Named `init_loss_function_ln_l2reg` until c350ed5 (2024-12-29). The rename is the kind
+        of thing that leaves older sanity-check scripts raising AttributeError years later --
+        `git log -S "<old name>"` recovers what happened faster than guessing a replacement.
+        """
         if (Z_U is not None) and (Z_singular_values is not None) and (Z_Vh is not None):
             self.Z_U = Z_U
             self.Z_singular_values = Z_singular_values
@@ -727,6 +864,16 @@ class MultilevelSORFModel(Module_):
             weighted_Z_matrix (numpy.array): feature matrix multiplied by importance multipliers.
             Z_U, Z_singular_values, Z_Vh (numpy.array): output of svd_aligned(weighted_Z_matrix).
         """
+        if self.error_loss_function is None:
+            # Otherwise this surfaces much later as
+            # "AttributeError: 'NoneType' object has no attribute 'find_minimum_linear_errors'"
+            # from inside optimize_quantity_shifts, which says nothing about what to do.
+            raise ValueError(
+                "error_loss_function is None. Assign one directly, or call "
+                "init_default_error_loss() for the MSE default, before optimizing l2reg and "
+                "the quantity shifts. The optimize_hyperparameters* entry points construct it "
+                "themselves, so this only arises when driving the optimization directly."
+            )
         # Calculate Z-matrix.
         if (weighted_Z_matrix is None) and (
             (Z_U is None) or (Z_singular_values is None) or (Z_Vh is None)
@@ -748,33 +895,60 @@ class MultilevelSORFModel(Module_):
         else:
             default_training_set_size = weighted_Z_matrix.shape[0]
         loss_function_ln_l2reg_kwargs = {"training_set_size": default_training_set_size}
-        ln_l2reg_range = self.ln_relative_l2reg_range + log_(
+        ln_l2reg_bounds = self.ln_l2reg_diag_ratio_bounds + log_(
             self.av_K_diag_element(training_set_size=default_training_set_size)
         )
         ln_l2reg_boss_min = global_optimize_1D(
             ninv_f(self.get_loss_function_ln_l2reg, **loss_function_ln_l2reg_kwargs),
-            ln_l2reg_range,
-            total_iterpts=self.ln_relative_l2reg_opt_iterpts,
+            ln_l2reg_bounds,
+            total_iterpts=self.l2reg_total_iterpts,
             opt_name="l2reg_opt",
             opt_method=self.l2reg_global_opt_method,
+            seed=self.boss_seed,
         )
-        # Finalize minima location with gradient optimization.
-        go = minimize(
-            f_winf(
-                self.get_loss_function_ln_l2reg_wder,
-                gradient=True,
-                **loss_function_ln_l2reg_kwargs,
-            ),
-            ln_l2reg_boss_min,
-            method=self.ln_l2reg_opt_method,
-            jac=True,
-            options={"disp": display_scipy_convergence},
-            tol=self.grad_opt_tolerance,
-        )
-        ln_l2reg_final_min = go.x[0]
-        # finalize calculations
+        # Finalize the minimum's location with gradient optimization, unless switched off with
+        # l2reg_local_opt_method=None. That off-switch did not work before: None was handed
+        # straight to scipy's minimize, which reads it as "pick a method for me" and runs
+        # anyway.
+        #
+        # Worth switching off under leave-one-group-out, where each extra evaluation costs a
+        # Cholesky solve per group rather than one elementwise multiplication -- but left to
+        # the caller rather than forced, since with small groups it is still cheap and the
+        # refinement still buys accuracy.
+        if self.l2reg_local_opt_method is None:
+            print("###skipping the l2reg gradient refinement")
+            ln_l2reg_final_min = ln_l2reg_boss_min
+        else:
+            go = minimize(
+                f_winf(
+                    self.get_loss_function_ln_l2reg_wder,
+                    gradient=True,
+                    **loss_function_ln_l2reg_kwargs,
+                ),
+                ln_l2reg_boss_min,
+                method=self.l2reg_local_opt_method,
+                jac=True,
+                options={"disp": display_scipy_convergence},
+                tol=self.grad_opt_tolerance,
+            )
+            ln_l2reg_final_min = go.x[0]
+        # Finalize calculations. gradient=True is REQUIRED, not an optimization: with
+        # gradient=False `get_loss_function_ln_l2reg` returns early before setting
+        # `error_loss_error_ders` (and, under grouping, `group_loss_multipliers`), which
+        # `get_loss_function_ln_hyperparameters` then consumes for the hyperparameter
+        # gradient. `minimize` above is the only other caller that reaches past that early
+        # return, so without this the off-switch (l2reg_local_opt_method=None) leaves those
+        # attributes unset and the hyperparameter gradient raises AttributeError.
+        #
+        # It also makes them correspond to ln_l2reg_final_min exactly; previously they were
+        # left over from whatever point scipy last probed, which need not be the accepted one.
+        # Cost is one extra gradient evaluation against the l2reg_total_iterpts (32 by
+        # default) of the global search above, and the loss VALUE is unchanged -- every loss
+        # class returns the same number from calc_wders as from __call__.
         try:
-            self.get_loss_function_ln_l2reg(ln_l2reg_final_min, **loss_function_ln_l2reg_kwargs)
+            self.get_loss_function_ln_l2reg(
+                ln_l2reg_final_min, gradient=True, **loss_function_ln_l2reg_kwargs
+            )
         except possible_numerical_exceptions:
             raise Z_matrix_error
         print("###optimal ln_l2reg:", ln_l2reg_final_min)
@@ -861,20 +1035,45 @@ class MultilevelSORFModel(Module_):
                 print("###calculating Z matrix with gradients:", now())
                 _, Z_matrix_derivatives = self.calc_training_Z_matrix(gradient=True)
             print("###calling loss gradient w.r.t. hyperparameters calculator:", now())
-            error_loss_hyperparameter_grad = leaveoneout_loss_der_wrt_features(
-                Z_matrix_derivatives,
-                self.Z_U,
-                self.Z_Vh,
-                self.Z_singular_values,
-                self.error_loss_error_ders,
-                mult_transformed_alphas_rhs,
-                self.reproduced_quantities,
-                self.stat_factors,
-                self.transformed_inv_K_Z,
-                self.shifted_training_weighted_quantities,
-                self.training_importance_multipliers,
-            )
+            if self.training_group_ids is None:
+                error_loss_hyperparameter_grad = leaveoneout_loss_der_wrt_features(
+                    Z_matrix_derivatives,
+                    self.Z_U,
+                    self.Z_Vh,
+                    self.Z_singular_values,
+                    self.error_loss_error_ders,
+                    mult_transformed_alphas_rhs,
+                    self.reproduced_quantities,
+                    self.stat_factors,
+                    self.transformed_inv_K_Z,
+                    self.shifted_training_weighted_quantities,
+                    self.training_importance_multipliers,
+                )
+            else:
+                error_loss_hyperparameter_grad = group_loss_der_wrt_features(
+                    Z_matrix_derivatives,
+                    self.Z_U,
+                    self.Z_Vh,
+                    self.Z_singular_values,
+                    self.eigenvalue_multipliers,
+                    self.leaveoneout_errors,
+                    self.group_loss_multipliers,
+                    self.training_group_ids,
+                    self.shifted_training_weighted_quantities,
+                    self.training_importance_multipliers,
+                )
         else:
+            if self.training_group_ids is not None:
+                # The memory-lean path is a jit-compiled routine in sorf_calculation that
+                # knows only the leave-one-out stat FACTORS; the group criterion needs the
+                # stat MATRICES, which it has no way to take. Rather than silently compute a
+                # leave-one-out gradient for a leave-one-group-out loss, refuse and name the
+                # two ways out.
+                raise NotImplementedError(
+                    "leave-one-group-out feature gradients need Z derivatives in memory: "
+                    "set sd_reuse_Z_derivatives=True, or use a gradient-free hyperparameter "
+                    "optimizer (opt_method='boss')"
+                )
             print("###calling loss gradient w.r.t. hyperparameters calculator:", now())
             error_loss_hyperparameter_grad = (
                 self.MultilevelSORF.calc_loss_function_hyperparameter_grad(
@@ -923,7 +1122,17 @@ class MultilevelSORFModel(Module_):
         """
         Negative inverse of the loss function (-1/loss) with derivatives.
         """
-        return ninv_f(self.get_loss_function_ln_hyperparameters_wders(ln_hyperparameters))
+        if self.training_group_ids is None:
+            return ninv_f(self.get_loss_function_ln_hyperparameters_wders(ln_hyperparameters))
+        # Under leave-one-group-out the memory-lean jit gradient path refuses -- it is compiled
+        # around the leave-one-out stat FACTORS and cannot take the per-group stat matrices --
+        # so the gradient has to come through the materialized-Z-derivatives path, which is
+        # what return_Z_matrices=True selects. Requested only when grouping is active, so the
+        # ungrouped path keeps using the leaner route and its memory profile is unchanged.
+        loss, loss_grad, _ = self.get_loss_function_ln_hyperparameters_wders(
+            ln_hyperparameters, return_Z_matrices=True
+        )
+        return ninv_f((loss, loss_grad))
 
     def get_ninv_loss_function(self, ln_hyperparameters):
         """
@@ -968,6 +1177,7 @@ class MultilevelSORFModel(Module_):
             initpts=self.boss_cycle_initpts,
             iterpts=self.boss_cycle_iterpts,
             minfreq=minfreq,
+            **({} if self.boss_seed is None else {"seed": self.boss_seed}),
             **extra_kwargs,
         )
         res = bo.run()
@@ -1236,6 +1446,7 @@ class MultilevelSORFModel(Module_):
         Z_matrix=None,
         optimize_shifts_l2reg=False,
         save_Z_matrix=False,
+        training_group_ids=None,
     ):
         """
         Fit the model using training data.
@@ -1251,6 +1462,7 @@ class MultilevelSORFModel(Module_):
             initialize_training_plane_sq_distance (bool): If True, the fit includes initializing calculation of square distance to the training plane. Default is False.
             Z_matrix (numpy.array or None): if not None defines Z_matrix used in the fit.
             optimize_shifts_l2reg (bool): if True (by default False) optimize l2 regularization and quantity shifts for the fit (overwrites model attributes ).
+            training_group_ids (list or None): grouping forwarded to `assign_training_set`, so that an `optimize_shifts_l2reg=True` fit selects l2reg by the same leave-one-GROUP-out criterion the hyperparameters were chosen with. Only consulted when the training set is reassigned, i.e. when `optimize_shifts_l2reg` or `save_Z_matrix` is True. Default is None, i.e. leave-one-out.
             save_Z_matrix (bool): if True (by default False) save the calculated Z_matrix in `training_set_Z_matrix` attribute.
         """
         # calculate Z-matrix
@@ -1266,6 +1478,7 @@ class MultilevelSORFModel(Module_):
             self.assign_training_set(
                 training_objects,
                 training_quantities,
+                training_group_ids=training_group_ids,
                 training_nuclear_charges=training_nuclear_charges,
                 training_importance_multipliers=training_importance_multipliers,
             )

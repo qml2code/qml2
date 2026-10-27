@@ -1,7 +1,7 @@
 # Contains procedures for dealing with problematic (i.e. non-invertible or close to non-invertible)
 # kernel matrices.
 from ..jit_interfaces import bool_, dint_, eye_, jit_, ones_, prange_, random_, sqrt_, zeros_
-from ..kernels import l2_norm_sq_dist
+from ..utils import l2_norm_sq_dist
 
 
 class KernelUnstable(Exception):
@@ -131,6 +131,13 @@ def sqdist_exclude_nearest(sqdist_mat, min_sqdist, num_cut_closest_entries, dint
     minimal_distances = zeros_(num_train)
     to_include = ones_(num_train, dtype=bool_)
 
+    if (min_sqdist <= 0.0) and (num_cut_closest_entries <= 0):
+        # NEITHER stopping criterion can ever fire: the distance test below is disabled for
+        # min_sqdist <= 0, and the count test never matches a non-positive target. Without
+        # this guard the loop runs forever -- silently, since it prints nothing until it
+        # has excluded something.
+        return all_indices_except(to_include)
+
     for i in prange_(num_train):
         minimal_distance_ids[i], minimal_distances[i] = min_id_sqdist(sqdist_mat[i], to_include, i)
 
@@ -149,8 +156,12 @@ def sqdist_exclude_nearest(sqdist_mat, min_sqdist, num_cut_closest_entries, dint
         num_ignored += 1
         if num_ignored == 1:
             print("Smallest ignored distance:", cur_min_sqdist)
-        if num_ignored == num_cut_closest_entries:
+        if (num_cut_closest_entries > 0) and (num_ignored >= num_cut_closest_entries):
             print("Largest ignored distance:", cur_min_sqdist)
+            break
+        if num_ignored >= num_train - 1:
+            # One entry left: there is no pair distance left to improve, and another pass
+            # would ask min_id_sqdist for the nearest of an empty set.
             break
         for i in prange_(num_train):
             if to_include[i]:

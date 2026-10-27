@@ -16,7 +16,7 @@ from ..jit_interfaces import (
     mean_,
 )
 from ..kernels.kernels import construct_gaussian_kernel
-from ..math import cho_solve
+from ..math import cho_solve_from_matrix
 from ..optimizers import global_optimize_1D
 from ..parallelization import embarrassingly_parallel
 from ..utils import check_allocation, flatten_to_scalar, get_numba_list
@@ -42,7 +42,7 @@ class KRRModel(Module_):
         l2reg_diag_ratio=None,
         training_reps_suppress_openmp=False,
         shift_quantities=False,
-        ln_l2reg_diag_ratio_bounds=[-24.0, 0.0],
+        ln_l2reg_diag_ratio_bounds=[-25.0, 0.0],
         ln_sigma_shift_bounds=[-10.0, 10.0],
         l2reg_total_iterpts=32,
         sigma_total_iterpts=32,
@@ -104,7 +104,7 @@ class KRRModel(Module_):
         l2reg_diag_ratio=None,
         training_reps_suppress_openmp=False,
         shift_quantities=False,
-        ln_l2reg_diag_ratio_bounds=[-24.0, 0.0],
+        ln_l2reg_diag_ratio_bounds=[-25.0, 0.0],
         ln_sigma_shift_bounds=[-10.0, 10.0],
         l2reg_total_iterpts=32,
         sigma_total_iterpts=32,
@@ -354,7 +354,7 @@ class KRRModel(Module_):
             sigma_opt_func = self.get_sigma_opt_func()
             self.finalize_l2_reg_rel_diag(sigma_opt_func)
 
-    def get_alphas(self, train_kernel, rhs=None, solver=cho_solve, **solver_kwargs):
+    def get_alphas(self, train_kernel, rhs=None, solver=cho_solve_from_matrix, **solver_kwargs):
         l2reg = self.l2reg
         if rhs is None:
             rhs = self.training_quantities

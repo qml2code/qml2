@@ -24,11 +24,11 @@ from .gradient_common import atom_force_dim
 from .gradient_kernels import add_force_kernel_contributions, get_energy_force_ranges
 from .sorf import (
     allow_sorf_numba_parallelization,
-    fast_walsh_hadamard,
     generate_sorf_stack_phases,
     hadamard_norm_const,
     rff_vec_norm_const,
 )
+from .walsh_hadamard import unnormalized_fast_walsh_hadamard
 
 
 @jit_
@@ -59,11 +59,12 @@ def add_sorf_func_forces(
     # First transform RFF derivatives into derivatives w.r.t. representation by doing operations in hadamard_rff_kernel_stack_phases
     # in reverse.
     ntransforms = sorf_diags.shape[0]
+    # Mirror of generate_sorf_stack_unbiased_phases: the ntransforms-1 net factors of
+    # norm_const are applied once rather than per pass, so the transform is the UNNORMALIZED one.
+    temp_rff_ders *= norm_const ** (ntransforms - 1)
     for transform in range(ntransforms - 1, -1, -1):
-        fast_walsh_hadamard(temp_rff_ders, norm_const)
+        unnormalized_fast_walsh_hadamard(temp_rff_ders)
         temp_rff_ders *= sorf_diags[transform]
-
-    temp_rff_ders /= norm_const
     # Do backward of reduction.
     if reductor is None:
         rff_rep_der = temp_rff_ders

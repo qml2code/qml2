@@ -80,6 +80,8 @@ constr_bool_ = bool_
 constr_dfloat_ = float_
 constr_dint_ = int_
 constr_dbool_ = bool_
+# for rounding off
+remainder_ = np.remainder
 
 
 def is_scalar_(val):
@@ -219,10 +221,23 @@ log_ = np.log
 linspace_ = np.linspace
 # loops
 prange_ = prange
+
+
+def get_range_(parallel=False):
+    # Return the loop iterator to use: prange for parallel loops, range for serial ones. Lets a jit
+    # factory choose at build time so a molecule-parallel bulk loop can call an atom-serial inner
+    # loop without nesting two prange_ instances.
+    if parallel:
+        return prange_
+    else:
+        return range
+
+
 # common functions
 sum_ = np.sum
 prod_ = np.prod
 abs_ = np.abs
+maximum_ = np.maximum
 square_ = np.square
 l2_norm_ = np.linalg.norm
 unique_ = np.unique

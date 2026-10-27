@@ -8,17 +8,18 @@ from pyscf import dft, gto, lo, scf
 
 from ..basic_utils import OptionUnavailableError, dump2pkl, loadpkl, overwrite_when_possible
 from ..compound import Compound
-from ..jit_interfaces import array_, zeros_
+from ..data import conversion_coefficient
+from ..jit_interfaces import array_, matmul_, zeros_
 from .aux_classes import OML_pyscf_calc_params, converged_mf, generate_ao_arr
 from .optimize_basis_sets import optimize_molecule_basis_rescalings, rescale_mol_basis
 from .representations import (
     OML_rep_params,
+    dipole_coupling_matrices,
     gen_atom_sorted_pseudo_orbs,
-    gen_odf_based_coup_mats,
-    gen_propagator_based_coup_mats,
     generate_atom_ao_ranges,
     generate_orb_rep_array,
     neglect_orb_occ,
+    reconstr_mat,
 )
 
 # WARNING: THIS INTERFACE HAS PROBLEMS
@@ -37,7 +38,23 @@ except ModuleNotFoundError:
 
 mf_creator = {"HF": scf.RHF, "UHF": scf.UHF, "KS": dft.RKS, "UKS": dft.UKS}
 
-unrestricted_methods = ["UHF", "UKS"]
+# Calculation types that carry their own spin treatment in the name. Every backend spells
+# the pair out -- HF/UHF and KS/UKS on pySCF, GFN2-xTB/spGFN2-xTB on a tight-binding one,
+# the "sp" prefix being the literature's own (spGFNn-xTB) -- so `calc_type` settles the
+# restricted-or-not question by itself and `restricted` never has to guess.
+unrestricted_methods = ["UHF", "UKS", "spGFN2-xTB", "spGFN1-xTB"]
+
+# Each calculation type beside the one differing from it ONLY in spin treatment, so that a
+# contradiction between `restricted` and `calc_type` can name the alternative meant.
+spin_treatment_counterparts = {
+    "HF": "UHF",
+    "KS": "UKS",
+    "GFN2-xTB": "spGFN2-xTB",
+    "GFN1-xTB": "spGFN1-xTB",
+}
+spin_treatment_counterparts.update(
+    {unrestricted: restricted for restricted, unrestricted in spin_treatment_counterparts.items()}
+)
 
 HF_methods = ["HF", "UHF"]
 
@@ -52,17 +69,61 @@ available_software = ["pySCF", "molpro", "tblite"]
 
 available_calc_types = {
     "pySCF": ["HF", "UHF", "KS", "UKS"],
-    "tblite": ["GFN2-xTB", "GFN1-xTB"],
+    # Restricted spelling first in each pair: entry 0 is what `calc_type=None` falls back on.
+    "tblite": ["GFN2-xTB", "spGFN2-xTB", "GFN1-xTB", "spGFN1-xTB"],
     "molpro": ["HF", "UHF"],
 }
 
 
 def assign_avail_check(val, avail_val):
-    if val in avail_val:
-        return val
-    else:
-        print("Not found:", val, avail_val)
-        raise OptionUnavailableError
+    """The canonical spelling of `val` from `avail_val`, matched ignoring case.
+
+    Returns the entry AS LISTED rather than as passed. That matters more than the
+    case-insensitivity itself: the rest of the module compares against those exact strings
+    (`software == "pySCF"`, `calc_type in HF_methods`), and `calc_type` is handed on to
+    backends that accept only their own spelling -- tblite wants "GFN2-xTB" and nothing
+    else. So case is forgiven at the boundary and there is exactly one spelling past it.
+
+    Non-string options (`None` among the localization procedures) are matched by equality.
+    """
+    for available_val in avail_val:
+        if val == available_val:
+            return available_val
+        if isinstance(val, str) and isinstance(available_val, str):
+            if val.lower() == available_val.lower():
+                return available_val
+    print("Not found:", val, avail_val)
+    raise OptionUnavailableError
+
+
+def assign_restrictedness(restricted, calc_type):
+    """Whether the calculation is spin-restricted, reconciled with `calc_type`.
+
+    `calc_type` already decides this wherever a backend spells both variants out, so the
+    default -- `None` -- reads it off, and every backend then behaves the same way. An
+    explicit value is honoured when it agrees and REFUSED when it does not: letting either
+    one quietly win would leave the compound disagreeing with itself about what was
+    computed, while the savefile is named after `calc_type` regardless.
+
+    Restricted is not the same as closed-shell. A restricted calculation of a molecule with
+    unpaired electrons is an ordinary thing to ask for -- ROHF on pySCF, plain GFN2 on a
+    tight-binding backend -- and `spin` goes on describing the state independently of the
+    ansatz used to reach it.
+    """
+    implied_restricted = calc_type not in unrestricted_methods
+    if restricted is None:
+        return implied_restricted
+    if bool(restricted) != implied_restricted:
+        counterpart = spin_treatment_counterparts.get(calc_type)
+        message = (
+            f"calc_type '{calc_type}' is "
+            + ("restricted" if implied_restricted else "unrestricted")
+            + f", but restricted={restricted} was requested"
+        )
+        if counterpart is not None:
+            message += f"; use calc_type '{counterpart}' for that"
+        raise OptionUnavailableError(message)
+    return implied_restricted
 
 
 class OML_Compound(Compound):
@@ -85,12 +146,11 @@ class OML_Compound(Compound):
         atomtypes=None,
         mats_savefile=None,
         calc_type=None,
+        restricted=None,
         basis="sto-3g",
         used_orb_type="standard",
         use_Huckel=False,
         optimize_geometry=False,
-        charge=0,
-        spin=None,
         dft_xc="lda,vwn",
         dft_nlc="",
         optimize_ao_rescalings=False,
@@ -100,10 +160,15 @@ class OML_Compound(Compound):
         pyscf_calc_params=None,
         use_pyscf_localization=True,
         write_full_pyscf_chkfile=False,
+        # NOTE: the model this selects depends on `software`. With pySCF it is SMD
+        # (pyscf.solvent.smd, see generate_pyscf_mf); with tblite it is ALPB
+        # (`calculator.add("alpb-solvation", ...)` in tblite_interface), because tblite
+        # has no SMD. The name predates the tblite backend and is kept for compatibility.
         smd_solvent=None,
         localization_procedure="IBO",
         use_gpu=False,
         temp_calc_dir=None,
+        **kwargs,
     ):
         super().__init__(
             xyz=xyz,
@@ -111,6 +176,7 @@ class OML_Compound(Compound):
             coordinates=coordinates,
             nuclear_charges=nuclear_charges,
             atomtypes=atomtypes,
+            **kwargs,
         )
 
         self.software = assign_avail_check(software, available_software)
@@ -120,13 +186,16 @@ class OML_Compound(Compound):
             self.calc_type = available_calc_types[self.software][0]
         else:
             self.calc_type = assign_avail_check(calc_type, available_calc_types[self.software])
-
-        self.charge = charge
-
-        if spin is None:
-            self.spin = self.default_spin_val()
-        else:
-            self.spin = spin
+        self.restricted = assign_restrictedness(restricted, self.calc_type)
+        # How many unpaired electrons the REPRESENTED state has, as opposed to the one that
+        # was calculated. They differ only where a backend applies an excitation by moving a
+        # single electron between the spin channels; everywhere else this is `spin`, which
+        # goes on being what reaches the backend and what the savefile name records.
+        self.representation_spin = self.spin
+        # Backend-reported quantities that nothing else can reproduce exactly. None on any
+        # backend that does not provide them; see get_xtb_charges.
+        self.xtb_mo_occ = None
+        self.xtb_charges = None
 
         self.mats_savefile = mats_savefile
         self.mats_savefile_final = None
@@ -137,7 +206,12 @@ class OML_Compound(Compound):
         self.optimize_geometry = optimize_geometry
         self.use_pyscf_localization = use_pyscf_localization
         self.smd_solvent = smd_solvent
-        self.localization_procedure = localization_procedure
+        # Canonicalised here rather than only checked at localization time, so that a
+        # misspelling is caught at construction and the stored value is the one the
+        # localizer branches on below.
+        self.localization_procedure = assign_avail_check(
+            localization_procedure, available_localization_procedures
+        )
         # related to generating and using ao rescalings.
         self.optimize_ao_rescalings = optimize_ao_rescalings
         self.ao_rescalings_optimization_kwargs = ao_rescalings_optimization_kwargs
@@ -168,6 +242,10 @@ class OML_Compound(Compound):
         self.e_tot = None
 
         self.ovlp_mat = None
+        self.dipole_mats = None
+        self.atom_coords_bohr = None
+        self.h0_mat = None
+        self.integral_source = None
         self.orb_mat = None
         if self.calc_type in HF_methods:
             self.j_mat = None
@@ -194,9 +272,6 @@ class OML_Compound(Compound):
             "dft_nlc": self.dft_nlc,
         }
 
-    def default_spin_val(self):
-        return (sum(self.nuclear_charges) - self.charge) % 2
-
     def assign_calc_res(self, calc_res_dict):
         self.mo_coeff = calc_res_dict["mo_coeff"]
         self.mo_occ = calc_res_dict["mo_occ"]
@@ -207,6 +282,16 @@ class OML_Compound(Compound):
 
         self.ovlp_mat = calc_res_dict["ovlp_mat"]
         self.orb_mat = calc_res_dict["orb_mat"]
+        # .get, not [...]: savefiles written before FJD existed are still perfectly good
+        # for every other representation and should keep loading. Asking for FJD without
+        # them raises where the need arises instead.
+        self.atom_coords_bohr = calc_res_dict.get("atom_coords_bohr")
+        self.h0_mat = calc_res_dict.get("h0_mat")
+        # Falls back on `spin`, which is what every savefile written before the two could
+        # differ was implicitly recording.
+        self.representation_spin = calc_res_dict.get("representation_spin", self.spin)
+        self.xtb_mo_occ = calc_res_dict.get("xtb_mo_occ")
+        self.xtb_charges = calc_res_dict.get("xtb_charges")
 
         if self.optimize_ao_rescalings:
             self.ao_rescalings = calc_res_dict["ao_rescalings"]
@@ -262,9 +347,19 @@ class OML_Compound(Compound):
             self.full_pyscf_chkfile = self.pyscf_chkfile + "_full"
         self.mats_created = ext_isfile(self.mats_savefile_final)
         if self.mats_created:
-            # Import ab initio results from the savefile.
-            precalc_vals = loadpkl(self.mats_savefile_final)
-            self.assign_calc_res(precalc_vals)
+            # Import ab initio results from the savefile. A file that will not load is
+            # treated as absent and recalculated rather than killing the run: savefiles
+            # written before dump2pkl became atomic can be damaged, and one bad molecule
+            # should not take a job over the whole dataset with it. It is reported, because
+            # a damaged savefile is worth knowing about.
+            try:
+                precalc_vals = loadpkl(self.mats_savefile_final)
+            except Exception as loading_error:
+                print("WARNING: could not read", self.mats_savefile_final, "-", loading_error)
+                print("WARNING: recalculating it instead")
+                self.mats_created = False
+            else:
+                self.assign_calc_res(precalc_vals)
 
     def run_calcs(self, initial_guess_comp=None):
         """Runs the ab initio calculations if they are necessary.
@@ -289,16 +384,54 @@ class OML_Compound(Compound):
         # Run the pySCF calculations.
         mf, pyscf_mol = self.generate_pyscf_mf_mol(initial_guess_comp=initial_guess_comp)
         # Special operations.
-        if self.used_orb_type != "standard_orb":
+        # alter_mo_occ rewrites occupation numbers to express an excitation, by finding the
+        # gap between occupied and empty. A tight-binding backend has no reliable gap to
+        # find, so it applies the excitation upstream instead, as a shift of the per-channel
+        # electron counts -- see tblite_interface.CHANNEL_ELECTRON_SHIFTS -- and its
+        # occupations arrive already excited.
+        if self.used_orb_type != "standard_orb" and self.software != "tblite":
             self.mo_occ = self.alter_mo_occ(mf.mo_occ)
+        backend_representation_spin = getattr(mf, "representation_spin", None)
+        # `or` would be wrong here: a represented multiplicity of 0 is a real answer, not a
+        # missing one, and falling back on `spin` would then re-open the channels an
+        # excitation just closed.
+        if backend_representation_spin is not None:
+            self.representation_spin = backend_representation_spin
+        self.xtb_mo_occ = getattr(mf, "xtb_mo_occ", None)
+        self.xtb_charges = getattr(mf, "xtb_charges", None)
 
         self.mo_coeff = self.adjust_spin_mat_dimen(mf.mo_coeff)
-        self.mo_occ = self.adjust_spin_mo_occ(mf.mo_occ)
+        # The per-channel breakdown is passed on only for an UNALTERED ground state.
+        # alter_mo_occ above rewrites the occupations in place for HOMO_removed /
+        # LUMO_added / first_excitation, and expresses that rewrite on the summed array;
+        # past that point the backend's own filling no longer describes what is being
+        # represented, so the threshold split has to interpret the altered array instead.
+        self.mo_occ = self.adjust_spin_mo_occ(
+            mf.mo_occ,
+            channel_occupations=(
+                getattr(mf, "channel_occupations", None)
+                # The tblite path applies the excitation to the counts, so its breakdown
+                # already describes the excited state and is used for every orbital type.
+                if self.software == "tblite" or self.used_orb_type == "standard"
+                else None
+            ),
+        )
         self.mo_energy = self.adjust_spin_mat_dimen(mf.mo_energy)
         self.aos = generate_ao_arr(pyscf_mol)
         self.atom_ao_ranges = generate_atom_ao_ranges(pyscf_mol)
         self.e_tot = mf.e_tot
         self.ovlp_mat = array_(pyscf_mol.intor_symmetric("int1e_ovlp"))
+        # Bohr, matching the integrals -- taken from the mol rather than self.coordinates,
+        # which is Angstrom on the pySCF path. Free for both backends.
+        self.atom_coords_bohr = array_(pyscf_mol.atom_coords())
+        # The backend's zeroth-order Hamiltonian, where it has one; free, it is already in
+        # the result. Used for the electrostatic channel of FJD as F - H0.
+        self.h0_mat = getattr(mf, "h0_mat", None)
+        # NOT the dipole integrals: those are deferred to dipole_matrices(). On a
+        # tight-binding backend they are reconstructed through pySCF, which needs the
+        # parametrization export and hence a recent backend version -- a cost no
+        # calculation should pay for a representation it was never asked for.
+        self.integral_source = pyscf_mol
 
         if self.calc_type in HF_methods:
             self.j_mat = self.adjust_spin_mat_dimen(mf.get_j(), already_spin_adj=True)
@@ -359,6 +492,16 @@ class OML_Compound(Compound):
             "orb_mat": self.orb_mat,
             "atom_ao_ranges": self.atom_ao_ranges,
             "e_tot": self.e_tot,
+            "atom_coords_bohr": self.atom_coords_bohr,
+            "h0_mat": self.h0_mat,
+            # Not derivable from `spin` on restore: an excitation applied to the electron
+            # COUNTS leaves the represented state with a different multiplicity from the
+            # calculated one, and num_spins() reads this rather than `spin`. Without it a
+            # restored excited compound reports one spin channel over two channels' worth
+            # of stored occupations, and quietly builds half its representations.
+            "representation_spin": self.representation_spin,
+            "xtb_mo_occ": self.xtb_mo_occ,
+            "xtb_charges": self.xtb_charges,
         }
         if self.calc_type in HF_methods:
             saved_data = {
@@ -389,18 +532,14 @@ class OML_Compound(Compound):
                 continue
             #   Generate the array of orbital representations.
             coupling_matrices = None
-            if rep_params.propagator_coup_mat:
-                coupling_matrices = gen_propagator_based_coup_mats(
-                    rep_params, self.mo_coeff[spin], self.mo_energy[spin], self.ovlp_mat
-                )
-                coupling_matrices = (self.ovlp_mat, *coupling_matrices)
-            if rep_params.odf_coup_mats:
-                coupling_matrices = gen_odf_based_coup_mats(
-                    self.mo_coeff[spin],
-                    self.mo_energy[spin],
-                    self.mo_occ[spin],
-                    self.ovlp_mat,
-                )
+            only_other_couplings = None
+            l2_norm_merges = None
+            if rep_params.fjd_coup_mats:
+                (
+                    coupling_matrices,
+                    only_other_couplings,
+                    l2_norm_merges,
+                ) = self.fjd_coupling_matrices(spin)
             if coupling_matrices is None:
                 coupling_matrices = (
                     self.fock_mat[spin],
@@ -414,11 +553,9 @@ class OML_Compound(Compound):
                 self.atom_ao_ranges,
                 self.ovlp_mat,
                 array_(coupling_matrices),
+                only_other_couplings=only_other_couplings,
+                l2_norm_merges=l2_norm_merges,
             )
-            if rep_params.odf_coup_mats and rep_params.orb_en_adj:
-                for orb_id in range(len(cur_orb_rep_array)):
-                    cur_Fock_mat = coupling_matrices[1]
-                    cur_orb_rep_array[orb_id].orbital_energy_readjustment(cur_Fock_mat, rep_params)
             self.orb_reps += cur_orb_rep_array
             orb_occ = orb_occ_prop_coeff(self)
             for orb_rep_counter in range(len(self.orb_reps)):
@@ -426,6 +563,108 @@ class OML_Compound(Compound):
                     self.orb_reps[orb_rep_counter].rho = orb_occ
             if rep_params.atom_sorted_pseudo_orbs:
                 self.orb_reps = gen_atom_sorted_pseudo_orbs(self.orb_reps)
+
+    def rebuild_integral_source(self):
+        """Recreate the object integrals are taken from, without redoing the calculation.
+
+        run_calcs sets self.integral_source, but a compound restored from a savefile never
+        runs it, and the dipole integrals themselves are deliberately not stored -- at
+        3*nao**2 per compound per conformer they would dominate the savefiles. Everything
+        needed to rebuild the SOURCE is stored, though, so it is remade rather than
+        recomputed:
+
+        * pySCF: a Mole over the same geometry and basis. No SCF is involved; it only has
+          to be able to evaluate one-electron integrals.
+        * a tight-binding backend: a PseudoMole around the overlap and atom-to-AO partition
+          that were saved with the other matrices, which is all it needs to serve integrals
+          in the backend's own AO convention.
+        """
+        if self.software == "tblite":
+            from .tblite_interface import pseudo_mole_from_ao_data
+
+            return pseudo_mole_from_ao_data(
+                self.ovlp_mat,
+                self.atom_ao_ranges,
+                array_([ao.angular for ao in self.aos]),
+                self.nuclear_charges,
+                self.coordinates * conversion_coefficient["Angstrom_Bohr"],
+            )
+        return self.generate_pyscf_mol()
+
+    def integral_source_object(self):
+        """The integral source, rebuilt from stored data if this came from a savefile."""
+        if self.integral_source is None:
+            self.integral_source = self.rebuild_integral_source()
+        return self.integral_source
+
+    def atom_coordinates_bohr(self):
+        """Nuclear coordinates in Bohr, matching the integrals.
+
+        Taken from the integral source when absent, which covers savefiles written before
+        they were stored alongside the other matrices.
+        """
+        if self.atom_coords_bohr is None:
+            self.atom_coords_bohr = array_(self.integral_source_object().atom_coords())
+        return self.atom_coords_bohr
+
+    def dipole_matrices(self):
+        """AO dipole integrals about the global origin, computed once, on demand.
+
+        Deferred rather than taken during run_calcs: on a tight-binding backend these come
+        from a pySCF Mole rebuilt over the backend's basis, which needs the parametrization
+        export, and no calculation should require that for a representation it does not use.
+        """
+        if self.dipole_mats is None:
+            self.dipole_mats = array_(self.integral_source_object().intor("int1e_r"))
+        return self.dipole_mats
+
+    def fjd_coupling_matrices(self, spin):
+        """The FJD coupling matrices: Fock, the electrostatic operator, and the D block.
+
+        Returns ``(matrices, only_other_couplings, l2_norm_merges)``.
+
+        The D block is four matrices that become two channels. The three shifted-dipole
+        components are one vector operator, contracted to a scalar per coupling by the l2
+        merge; the bond projection is a scalar operator whose self coupling vanishes
+        identically, so its self slot is dropped rather than carried as a constant-zero
+        column.
+
+        The F and J slots have the same meaning in both backends but different providers:
+
+        * pySCF: the Fock and Coulomb matrices the mean-field object supplies.
+        * a tight-binding backend: no converged Fock matrix is retained, so F is
+          reconstructed from the FULL orbital set as ``S C eps C^T S`` -- occupied-only
+          would give the energy-weighted density, which agrees with F only on
+          occupied-occupied couplings -- and J is ``F - H0``, the self-consistent-charge
+          potential. That is a density-response operator rather than a clean Coulomb one;
+          carry HF intuition about the J channel loosely.
+        """
+        if self.calc_type in HF_methods:
+            fock_mat = self.fock_mat[spin]
+            electrostatic_mat = self.jk_mat_spin_rescaled(self.j_mat[spin])
+        else:
+            if self.h0_mat is None:
+                raise Exception(
+                    "FJD needs either a Fock and Coulomb matrix or a zeroth-order "
+                    f"Hamiltonian; software '{self.software}' provided neither."
+                )
+            fock_mat = reconstr_mat(
+                matmul_(self.ovlp_mat, self.mo_coeff[spin]),
+                mo_energy=self.mo_energy[spin],
+                mat_type="Fock",
+            )
+            electrostatic_mat = fock_mat - self.h0_mat
+        dipole_channels = dipole_coupling_matrices(
+            self.dipole_matrices(),
+            self.ovlp_mat,
+            self.atom_coordinates_bohr(),
+            array_([ao.atom_id for ao in self.aos]),
+        )
+        matrices = (fock_mat, electrostatic_mat, *dipole_channels)
+        # Only the bond projection (last) lacks a self coupling; only the three dipole
+        # components (2, 3, 4) merge into one channel.
+        only_other_couplings = array_([False] * 5 + [True])
+        return matrices, only_other_couplings, [[2, 3, 4]]
 
     def jk_mat_spin_rescaled(self, mat):
         return mat / jk_mat_spin_rescaling(self)
@@ -519,7 +758,12 @@ class OML_Compound(Compound):
     def generate_pyscf_mf_mol(self, initial_guess_comp=None):
         if self.software == "tblite":
             return tblite_generate_pyscf_mf_mol(
-                self, charge=self.charge, spin=self.spin, solvent=self.smd_solvent
+                self,
+                calc_type=self.calc_type,
+                charge=self.charge,
+                spin=self.spin,
+                used_orb_type=self.used_orb_type,
+                solvent=self.smd_solvent,
             )
         #        if self.software == "tblite":
         #            return tblite_generate_pyscf_mf_mol(self)
@@ -538,12 +782,41 @@ class OML_Compound(Compound):
             dump2pkl(output, self.full_pyscf_chkfile)
         return output
 
+    def get_xtb_charges(self):
+        """The tight-binding backend's own atomic partial charges.
+
+        Stored with the other results, so a restored compound has them without recomputing
+        anything. A savefile written before they were stored has none, and rather than
+        refuse, the calculation is redone -- it is a single point on a geometry that is
+        already known, and the alternative is a field that stays empty forever on
+        everything cached so far.
+
+        They are the GROUND STATE's charges. `used_orb_type` excitations rewrite
+        occupations after convergence and never re-run the calculation, so an excited
+        compound's charges are the ones its unexcited calculation produced; they do not
+        describe the state being represented.
+
+        Mulliken analysis of the stored density reproduces them closely but not exactly --
+        `mo_occ` has been refilled from the orbital ordering, and where the backend was
+        smearing, the two densities differ (8.7e-04 per atom on octatetraene). Hence
+        keeping the backend's own numbers rather than deriving them.
+        """
+        if self.xtb_charges is None:
+            if self.software != "tblite":
+                raise OptionUnavailableError(
+                    f"software '{self.software}' computes no tight-binding charges; "
+                    "get_xtb_charges is available for tblite calculations only"
+                )
+            mf, _ = self.generate_pyscf_mf_mol()
+            self.xtb_charges = mf.xtb_charges
+            if self.xtb_mo_occ is None:
+                self.xtb_mo_occ = mf.xtb_mo_occ
+        return self.xtb_charges
+
     def calc_unrestricted(self):
         match self.software:
-            case "pySCF":
-                return self.calc_type in unrestricted_methods
-            case "tblite":
-                return False
+            case "pySCF" | "tblite":
+                return not self.restricted
             case _:
                 raise Exception("Unknown/untested software")
 
@@ -600,15 +873,51 @@ class OML_Compound(Compound):
     def adjust_spin_mat_dimen(self, matrices, already_spin_adj=False):
         if self.calc_unrestricted():
             return matrices
-        if already_spin_adj and self.spin != 0:
+        if already_spin_adj and self.representation_spin != 0:
             return array_(matrices)
         return array_([matrices for _ in range(self.num_spins())])
 
-    def adjust_spin_mo_occ(self, mo_occ):
+    def adjust_spin_mo_occ(self, mo_occ, channel_occupations=None):
+        """Occupations laid out one row per spin channel.
+
+        Three ways in, in decreasing order of how much the calculation already told us:
+
+        * an unrestricted calculation answers per channel to begin with, so its array is
+          taken as it stands;
+        * a restricted calculation of a closed shell has a single channel, and the summed
+          occupations are already it;
+        * a restricted calculation with unpaired electrons has to be SPLIT, and that is
+          what `channel_occupations` is for.
+
+        The split used to be inferred by thresholding the summed array: an orbital joins
+        channel s when its total occupation clears s + neglect_orb_occ. That reads an
+        integral filling correctly and a smeared one incorrectly. A radical cation whose
+        hole is spread over three near-degenerate orbitals comes back as
+        (1.80, 1.80, 1.40) -- all three above the 1.1 cut -- so the beta channel is handed
+        as many orbitals as alpha and the molecule ends up represented as though no
+        electron were missing. pySCF's HF, which this module was written around, fills
+        integrally and never provokes it; a tight-binding backend fills at a finite
+        electronic temperature and provokes it routinely.
+
+        So where the backend can say which channel each electron went into -- computed
+        from the orbital ordering and the electron count, see
+        tblite_interface.aufbau_channel_occupations -- that breakdown is used directly and
+        nothing is inferred. A genuinely degenerate partly-filled shell still comes back
+        fractional in both channels, because sharing evenly over orbitals the energies
+        cannot tell apart is the honest description of it; what goes away is the accidental
+        case, where the smearing reflected the electronic temperature rather than symmetry.
+
+        The threshold path stays for everything that provides no breakdown, and for the
+        altered occupations of HOMO_removed / LUMO_added / first_excitation -- those are
+        expressed on the summed array by alter_mo_occ, and describe an occupation the
+        ground-state filling no longer matches.
+        """
         if self.calc_unrestricted():
             return array_(mo_occ)
         if self.num_spins() == 1:
             return self.adjust_spin_mat_dimen(mo_occ)
+        if channel_occupations is not None:
+            return array_(channel_occupations)
         new_mo_occ = zeros_((2, mo_occ.shape[0]))
         for orb_id, occ_num in enumerate(mo_occ):
             for spin_id in range(self.num_spins()):
@@ -617,7 +926,7 @@ class OML_Compound(Compound):
         return new_mo_occ
 
     def num_spins(self):
-        if self.calc_unrestricted() or self.spin != 0:
+        if self.calc_unrestricted() or self.representation_spin != 0:
             return 2
         else:
             return 1

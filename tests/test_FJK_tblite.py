@@ -10,6 +10,13 @@ import pytest
 from conftest import compare_or_create
 from test_FJK import run_single_FJK_pair_test
 
+tblite_calc_kwargs = {
+    "localization_procedure": "Pipek-Mezey",
+    "software": "tblite",
+    "calc_type": "GFN2-xTB",
+    "oml_rep_params_kwargs": {"max_angular_momentum": 1, "fjd_coup_mats": True},
+}
+
 
 def test_FJK_tblite():
     pytest.importorskip("tblite")
@@ -25,14 +32,35 @@ def test_FJK_tblite():
             name,
             kwargs,
             checksums_storage,
-            localization_procedure="Pipek-Mezey",
-            software="tblite",
-            calc_type="GFN2-xTB",
-            oml_rep_params_kwargs={"max_angular_momentum": 1, "odf_coup_mats": True},
             excluded_xyzs=["0023.xyz", "0025.xyz"],
+            **tblite_calc_kwargs,
+        )
+    compare_or_create(checksums_storage, test_name, max_rel_difference=0.1)
+
+
+def test_FJK_tblite_concatenated_pairs():
+    pytest.importorskip("tblite")
+    pytest.importorskip("pyscf")
+    test_name = "FJK_tblite_concatenated_pairs"
+
+    d = {
+        "solvation": {"smd_solvent": "water"},
+    }
+    # K.Karan: uncommented spin test because it is too unstable
+    # "spin": {"spin": 2, "calc_type": "UHF"},
+    checksums_storage = {}
+    for name, kwargs in d.items():
+        run_single_FJK_pair_test(
+            name,
+            kwargs,
+            checksums_storage,
+            concatenate_components=True,
+            excluded_xyzs=["0023.xyz", "0025.xyz"],
+            **tblite_calc_kwargs,
         )
     compare_or_create(checksums_storage, test_name, max_rel_difference=0.1)
 
 
 if __name__ == "__main__":
     test_FJK_tblite()
+    test_FJK_tblite_concatenated_pairs()

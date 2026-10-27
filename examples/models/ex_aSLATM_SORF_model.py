@@ -61,7 +61,7 @@ def main():
         representation_function=slatm_calculator,
         nfeatures=32768,
         ntransforms=3,
-        ln_l2reg_diag_ratio_bounds=[-24.0, 0.0],
+        ln_l2reg_diag_ratio_bounds=[-25.0, 0.0],
         ln_sigma_shift_bounds=[-10.0, 10.0],
         l2reg_total_iterpts=32,
         sigma_total_iterpts=32,

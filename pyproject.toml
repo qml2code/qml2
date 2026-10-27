@@ -6,7 +6,7 @@ requires = [
 
 [project]
 name = "qml2"
-version = "0.1.8"
+version = "0.1.9"
 description = "Collection of Quantum Machine Learning routines"
 readme = "README.md"
 license.text = "MIT License"
@@ -30,12 +30,27 @@ dependencies = [
   "numpy",
   "scipy",
 ]
+# qml2.cheminfo: rdkit is the only third-party package it adds. Both modules guard the import
+# (ExceptionRaisingClass), so importing them without rdkit succeeds and fails only on use --
+# naming the requirement here so that is not something to rediscover.
+#
+# This does NOT make qml2.cheminfo cheap to import: numba, llvmlite and scipy arrive regardless,
+# because qml2/__init__.py imports Compound/CompoundList and representations/cMBDF.py pulls
+# scipy.fft/scipy.signal. cheminfo.nn_separation additionally uses qml2.representations for SLATM.
+optional-dependencies.cheminfo = [
+  "rdkit",
+]
 optional-dependencies.models = [
   "aalto-boss",
 ]
 optional-dependencies.morfeus = [
   "morfeus-ml<=0.7.2",
   "rdkit",
+  # morfeus.conformer does `from pkg_resources import parse_version`, and setuptools
+  # DELETED pkg_resources in 82.0.0 -- 81.0.0 still ships it (with a deprecation warning),
+  # 82.0.0 does not. Without this bound a fresh `pip install .[morfeus]` silently gets a
+  # setuptools that makes every `import qml2.ensemble` fail at run time, not install time.
+  "setuptools<82",
 ]
 optional-dependencies.orb_ml = [
   "geometric",
@@ -46,12 +61,13 @@ optional-dependencies.torch = [
 ]
 
 optional-dependencies.xtb = [
-  "tblite==0.4",
+  "tblite>=0.7",
 ]
 
 [tool.setuptools]
 packages = [
   "qml2",
+  "qml2.cheminfo",
   "qml2.cupy",
   "qml2.dataset_formats",
   "qml2.gpytorch",
@@ -62,6 +78,7 @@ packages = [
   "qml2.multilevel_sorf.base_constructors",
   "qml2.multilevel_sorf.processed_object_constructors",
   "qml2.orb_ml",
+  "qml2.orb_ml.tblite_interface",
   "qml2.representations",
   "qml2.test_utils",
 ]

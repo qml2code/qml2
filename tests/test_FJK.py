@@ -26,6 +26,7 @@ def run_single_FJK_pair_test(
     use_Huckel=False,
     oml_rep_params_kwargs={"max_angular_momentum": 1},
     excluded_xyzs=None,
+    concatenate_components=False,
     **extra_comp_param_kwargs,
 ):
     from qml2.orb_ml import OML_Compound, OML_CompoundList, OML_Slater_pair
@@ -80,12 +81,20 @@ def run_single_FJK_pair_test(
     # Calculate sigmas.
     # sigmas = rep_stddevs(A_compounds)
     # sigmas *= sqrt_(array_(float(len(sigmas))))
-    sigmas = sigmas_redivied_by_mats(rep_params, oml_compound_list=A_compounds)
+    # The sigma guess has to be built from the same pairing as the kernel it feeds: on a
+    # Slater pair list the default is the difference treatment, whose first determinant
+    # carries negated orbital weights.
+    sigmas = sigmas_redivied_by_mats(
+        rep_params, oml_compound_list=A_compounds, concatenate_components=concatenate_components
+    )
     global_sigma = 0.5
 
     for norm in ["l1", "l2"]:
-        asym_kernel = gaussian_kernel(A_compounds, B_compounds, sigmas, global_sigma, norm=norm)
-        sym_kernel = gaussian_kernel_symmetric(A_compounds, sigmas, global_sigma, norm=norm)
+        kernel_kwargs = {"norm": norm, "concatenate_components": concatenate_components}
+        asym_kernel = gaussian_kernel(
+            A_compounds, B_compounds, sigmas, global_sigma, **kernel_kwargs
+        )
+        sym_kernel = gaussian_kernel_symmetric(A_compounds, sigmas, global_sigma, **kernel_kwargs)
         add_checksum_to_dict(
             checksums_storage,
             pair_name + "_asym_kernel_" + norm,

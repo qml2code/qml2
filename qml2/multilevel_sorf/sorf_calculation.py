@@ -18,6 +18,7 @@ from .base_constructors import (
     calc_input_size_parameters,
     calc_variance_lvl,
     calc_variance_normalized_lvl,
+    calculate_representation_lvl,
     component_cycle_lvl,
     component_sum_lvl,
     compression_lvl,
@@ -45,6 +46,7 @@ from .base_constructors import (
     resize_lvl,
     sign_invariant_sorf_lvl,
     sorf_lvl,
+    split_compilation_parameters,
     unscaled_sign_invariant_sorf_lvl,
     unscaled_sorf_lvl,
     weighted_component_cycle_lvl,
@@ -55,6 +57,7 @@ from .pickle import Pickler
 
 implemented_levels = [
     normalization_lvl,
+    calculate_representation_lvl,
     weighted_component_sum_lvl,
     component_sum_lvl,
     resize_lvl,
@@ -293,18 +296,39 @@ def get_mean_diagonal_element_calculator(sorf_routine):
     return calc_mean_diagonal_element
 
 
+# The levels that mark a position INSIDE the variance tree, i.e. at or above the level whose
+# dispersion is being estimated. Descending past the outermost one that is not in this set is what
+# tells get_variance_input_creator_from_def it has reached the ordinary input objects underneath.
+# NOTE: `calc_variance_normalized_lvl` is deliberately ABSENT, matching the membership this test had
+# before compile-time levels existed. Adding it looks harmless and is not: the recursion would then
+# descend past a `calc_variance_normalized` node instead of stopping at it, which changes the variance
+# input object -- and therefore the guessed hyperparameters -- for every stack built on
+# `mixed_extensive_sorf`. Four FJD/FJK feature benchmarks catch it if it is added back.
+VARIANCE_TREE_LEVELS = [
+    component_cycle_lvl,
+    weighted_component_cycle_lvl,
+    calc_variance_lvl,
+    pass_variance_lvl,
+    pass_variance_fork1_lvl,
+    pass_variance_fork2_lvl,
+    element_id_switch_variance_lvl,
+    concatenation_variance_lvl,
+]
+
+
 def get_variance_input_creator_from_def(function_definition):
-    if function_definition[-1] not in [
-        component_cycle_lvl,
-        weighted_component_cycle_lvl,
-        calc_variance_lvl,
-        pass_variance_lvl,
-        pass_variance_fork1_lvl,
-        pass_variance_fork2_lvl,
-        element_id_switch_variance_lvl,
-        concatenation_variance_lvl,
-    ]:
-        return get_copy_from_def(function_definition)
+    last_level = function_definition[-1]
+    if last_level not in VARIANCE_TREE_LEVELS:
+        # `calculate_representation` is the one level the correction PRESERVES rather than replacing,
+        # so it turns up on both sides of the boundary and cannot be classified by name alone. Above
+        # the level of interest the variance tree continues below it and the recursion must go on;
+        # below it, the ordinary input object is exactly what is wanted. Whether any variance level
+        # remains deeper in the list is what distinguishes the two.
+        continues_below = last_level == calculate_representation_lvl and any(
+            level in VARIANCE_TREE_LEVELS for level in function_definition[:-1]
+        )
+        if not continues_below:
+            return get_copy_from_def(function_definition)
 
     variance_input_class = get_class_from_def(function_definition, input_object_prefix)
     if len(function_definition) == 1:
@@ -341,6 +365,22 @@ def get_variance_input_creator_from_def(function_definition):
         def from_input(input_object):
             nested_variance_obj = nested_input_creator(input_object.nested_input_objects[0])
             return variance_input_class(nested_variance_obj)
+
+    elif last_level == calculate_representation_lvl:
+        # This level keeps its ORDINARY input-object class, because the correction preserves the level
+        # itself rather than substituting a variance counterpart. That class comes from inp_add_simple,
+        # whose constructor takes the sizes explicitly, where every variance class derives them from
+        # its nested object -- and numba does not apply the Python defaults in this call. So they are
+        # passed through, from the same place inp_pass_variance reads them.
+
+        @jit_
+        def from_input(input_object):
+            nested_variance_obj = nested_input_creator(input_object.nested_input_object)
+            return variance_input_class(
+                nested_variance_obj,
+                nested_variance_obj.output_size,
+                nested_variance_obj.work_size,
+            )
 
     else:
 
@@ -386,6 +426,12 @@ def get_sorf_variance_corrected_function_definition(function_definition_list, le
         weighted_component_sum_lvl: weighted_component_cycle_lvl,
         element_id_switch_lvl: element_id_switch_variance_lvl,
         concatenation_lvl: concatenation_variance_lvl,
+        # Kept as ITSELF, unlike everything else above the level of interest. The others become
+        # `pass_variance` because they only need to forward a feature vector; this one has to keep
+        # doing its actual job, because the levels BELOW it are the variance chain and they consume
+        # the per-atom object it builds -- hand them the conformer instead and nothing types. The
+        # level performs no arithmetic, so there is no variance-specific behaviour to define.
+        calculate_representation_lvl: calculate_representation_lvl,
     }
 
     # define function for calculating variance
@@ -406,14 +452,24 @@ def get_sorf_variance_corrected_function_definition(function_definition_list, le
 
 
 def get_sorf_variance_calculator(
-    function_definition_list, level_of_interest, corrected_function_definition=None
+    function_definition_list,
+    level_of_interest,
+    corrected_function_definition=None,
+    compilation_parameter_list=None,
 ):
     if corrected_function_definition is None:
         corrected_function_definition = get_sorf_variance_corrected_function_definition(
             function_definition_list, level_of_interest
         )
-    # create variance function and the input object for it
-    variance_routine = get_routine_from_def(corrected_function_definition)
+    # create variance function and the input object for it.
+    #
+    # The compilation parameters come along because a level preserved by
+    # get_sorf_variance_corrected_function_definition still needs whatever was baked into it. The
+    # correction replaces levels one-for-one and never changes the list's LENGTH, so the parallel
+    # parameter list still lines up positionally.
+    variance_routine = get_routine_from_def(
+        corrected_function_definition, compilation_parameter_list=compilation_parameter_list
+    )
 
     extract_final_result = get_extract_final_result()
 
@@ -592,7 +648,14 @@ class MultilevelSORF:
         for level in function_definition_list:
             assert (isinstance(level, tuple)) or (level in implemented_levels), level
         self.function_definition_list = function_definition_list
-        self.parameter_list = parameter_list
+        # Compile-time parameters travel in parameter_list under a reserved key, but they configure
+        # the generated FUNCTIONS rather than the input objects. Split them out here, before
+        # anything downstream reads parameter_list, so every existing consumer sees exactly the dict
+        # it saw before and only the routine constructors learn about them. See
+        # base_constructors/compilation_parameters.py.
+        self.parameter_list, self.compilation_parameter_list = split_compilation_parameters(
+            parameter_list
+        )
         # for test reproducability.
         self.rng = rng
         self.test_mode = test_mode
@@ -606,6 +669,8 @@ class MultilevelSORF:
         self.init_routines()
 
     def init_routines(self):
+        # No compilation parameters here: see get_copy_from_def on why the copy of an input object
+        # cannot depend on what a level baked in.
         self.copy_input_object = get_copy_from_def(self.function_definition_list)
         self.copy_grad_input_object = get_copy_from_def(
             self.function_definition_list, gradient=True
@@ -659,12 +724,17 @@ class MultilevelSORF:
         if gradient:
             if self.sorf_routine_wgrad is None:
                 self.sorf_routine_wgrad = get_routine_from_def(
-                    self.function_definition_list, gradient=True
+                    self.function_definition_list,
+                    gradient=True,
+                    compilation_parameter_list=self.compilation_parameter_list,
                 )
             return self.sorf_routine_wgrad
         else:
             if self.sorf_routine is None:
-                self.sorf_routine = get_routine_from_def(self.function_definition_list)
+                self.sorf_routine = get_routine_from_def(
+                    self.function_definition_list,
+                    compilation_parameter_list=self.compilation_parameter_list,
+                )
             return self.sorf_routine
 
     def get_Z_matrix_calculator(self, gradient=False):
@@ -690,12 +760,17 @@ class MultilevelSORF:
         if gradient:
             if self.gradient_cpu_estimator is None:
                 self.gradient_cpu_estimator = get_cpuest_from_def(
-                    self.function_definition_list, gradient=True
+                    self.function_definition_list,
+                    gradient=True,
+                    compilation_parameter_list=self.compilation_parameter_list,
                 )
             return self.gradient_cpu_estimator
         else:
             if self.cpu_estimator is None:
-                self.cpu_estimator = get_cpuest_from_def(self.function_definition_list)
+                self.cpu_estimator = get_cpuest_from_def(
+                    self.function_definition_list,
+                    compilation_parameter_list=self.compilation_parameter_list,
+                )
             return self.cpu_estimator
 
     def get_list_cpu_estimator(self, gradient=False):
@@ -987,7 +1062,9 @@ class MultilevelSORF:
             self.variance_calculators = {}
         if ilevel not in self.variance_calculators:
             self.variance_calculators[ilevel] = get_sorf_variance_calculator(
-                full_function_definition_list, ilevel
+                full_function_definition_list,
+                ilevel,
+                compilation_parameter_list=self.compilation_parameter_list,
             )
         if self.variance_input_objects is None:
             self.variance_input_objects = {}

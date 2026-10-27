@@ -1,7 +1,7 @@
 # TODO: Perhaps use energy_forces_ids from ..kernels.gradient_kernels more?
 from ..jit_interfaces import Module_, array_, concatenate_, dint_, dot_, empty_, lstsq_, sum_
 from ..kernels.gradient_kernels import get_derivative_kernel
-from ..math import svd_solve
+from ..math import svd_solve_from_matrix
 from ..parallelization import embarrassingly_parallel
 from ..representations import generate_fchl19
 from ..utils import check_allocation
@@ -140,7 +140,7 @@ class OQMLModel(KRRLocalModel):
         training_set_nuclear_charges,
         training_energies,
         training_forces,
-        **kwargs
+        **kwargs,
     ):
         all_reps = concatenate_(all_reps_list)
         atom_nums = array_([len(reps) for reps in all_reps_list])
@@ -165,7 +165,7 @@ class OQMLModel(KRRLocalModel):
         training_set_coords,
         training_energies,
         training_forces,
-        **kwargs
+        **kwargs,
     ):
         print("Calculating representations.")
         (
@@ -268,7 +268,7 @@ class GPRForceModel(OQMLModel):
         l2reg_diag_ratio=array_(1.0e-6),
         num_consistency_check=array_(1.0e-6),
         rcond=array_(0.0),
-        **other_kwargs
+        **other_kwargs,
     ):
         super().__init__(**other_kwargs)
         self.init_stability_checks(
@@ -321,7 +321,7 @@ class GPRForceModel(OQMLModel):
             train_kernel,
         )
         rhs = combine_energy_forces_rhs(training_energies, training_forces)
-        self.get_alphas_w_lambda(train_kernel, rhs, solver=svd_solve, rcond=self.rcond)
+        self.get_alphas_w_lambda(train_kernel, rhs, solver=svd_solve_from_matrix, rcond=self.rcond)
 
     def predict_from_representations(self, nmols):
         self.temp_kernel = check_allocation(

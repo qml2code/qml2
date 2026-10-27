@@ -12,7 +12,6 @@ from ..jit_interfaces import (
     OptionalGenerator_,
     abs_,
     array_jittable_,
-    bool_,
     cos_,
     dim0float_array_,
     empty_,
@@ -29,6 +28,7 @@ from ..jit_interfaces import (
     sqrt_,
 )
 from ..utils import check_allocation, get_atom_environment_ranges, get_element_ids_from_sorted
+from .walsh_hadamard import unnormalized_fast_walsh_hadamard
 
 avoid_sorf_numba_parallelization_env_var_name = "QML2_AVOID_SORF_NUMBA_PARALLELIZATION"
 
@@ -128,37 +128,6 @@ def rff_vec_norm_const(nfeatures: int_) -> ndarray_:
     return sqrt_(2.0 / array_jittable_(float(nfeatures)))
 
 
-# Taken from https://en.wikipedia.org/wiki/Fast_Walsh%E2%80%93Hadamard_transform.
-@jit_
-def fast_walsh_hadamard(
-    array: ndarray_, norm_const: dim0float_array_, forward: bool_ = True
-) -> None:
-    """
-    Fast Walsh-Hadamard transform.
-    """
-    n = array.shape[0]
-    if forward:
-        h = 1
-    else:
-        h = n // 2
-    while True:
-        for i in range(0, n, h * 2):
-            for j in range(i, i + h):
-                x = array[j]
-                y = array[j + h]
-                array[j] = x + y
-                array[j + h] = x - y
-        if forward:
-            h *= 2
-            if h >= n:
-                break
-        else:
-            if h == 1:
-                break
-            h = h // 2
-    array[:] *= norm_const
-
-
 @jit_
 def generate_sorf_stack_unbiased_phases(
     red_scaled_reps, temp_red_reps, sorf_diags, norm_const
@@ -170,11 +139,13 @@ def generate_sorf_stack_unbiased_phases(
         size = red_scaled_reps.shape[0]
         temp_red_reps[:size] = red_scaled_reps[:]
         temp_red_reps[size:] = 0.0
+    # Each transform contributes one factor of norm_const and Eq. (20) of the QML-Lightning
+    # arxiv divides by one, so the Ntransforms-1 net factors are applied once here instead of
+    # being folded into every pass. The transform below is therefore the UNNORMALIZED one.
+    temp_red_reps *= norm_const ** (Ntransforms - 1)
     for transform in range(Ntransforms):
         temp_red_reps *= sorf_diags[transform]
-        fast_walsh_hadamard(temp_red_reps, norm_const)
-    # appears from Eq. (20) in QML-Lightning arxiv.
-    temp_red_reps /= norm_const
+        unnormalized_fast_walsh_hadamard(temp_red_reps)
 
 
 @jit_

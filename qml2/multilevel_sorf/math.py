@@ -5,6 +5,8 @@
 from ..jit_interfaces import abs_, array_, dot_, empty_, jit_, median_, prange_, sqrt_, sum_
 from ..math import svd_aligned
 from ..models.sorf_hyperparameter_optimization import (
+    group_errors_from_precalc,
+    group_errors_quantity_ders,
     leaveoneout_eigenvalue_multipliers,
     leaveoneout_errors_from_precalc,
     leaveoneout_errors_quantity_ders,
@@ -57,6 +59,37 @@ def error_matrices_for_shifts(
         reproduced_weighted_quantities, weighted_quantities, stat_factors
     )
 
+    shift_b *= -1
+    return shift_A_mat, shift_b
+
+
+def group_error_matrices_for_shifts(
+    weighted_shift_coeffs,
+    weighted_quantities,
+    Z_U,
+    eigenvalue_multipliers,
+    stat_matrices,
+    test_index_list,
+    transformed_inv_K_Z,
+):
+    """``(A, b)`` for the quantity shift, leave-one-GROUP-out version.
+
+    Argument-for-argument the same as :func:`error_matrices_for_shifts` with the per-point
+    stat factors replaced by the per-group stat matrices. The held-out errors are LINEAR in
+    the shift, so ``A`` is their derivative and ``b`` is minus their value at ZERO shift, and
+    minimizing the loss of ``A x - b`` gives the optimal shift in one solve.
+
+    The zero-shift errors are computed here rather than passed in: the caller runs this
+    BEFORE it has evaluated the errors for the current shift, so there is nothing to reuse.
+    """
+    shift_A_mat = group_errors_quantity_ders(
+        weighted_shift_coeffs, Z_U, eigenvalue_multipliers, stat_matrices, test_index_list, None
+    )
+    transformed_alphas_rhs = dot_(weighted_quantities, Z_U)
+    reproduced_weighted_quantities = dot_(transformed_inv_K_Z, transformed_alphas_rhs)
+    shift_b = group_errors_from_precalc(
+        reproduced_weighted_quantities, weighted_quantities, stat_matrices, test_index_list
+    )
     shift_b *= -1
     return shift_A_mat, shift_b
 

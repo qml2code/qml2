@@ -1,3 +1,4 @@
+from ...basic_utils import OptionUnavailableError
 from ...jit_interfaces import all_, array_, concatenate_, dint_, empty_, unique_
 from ...utils import get_element_ids_from_sorted
 from ..base_constructors import (
@@ -26,6 +27,11 @@ except ModuleNotFoundError as ex:
 orb_rep_def = ["array_2D", "rhos"]
 comp_rep_def = orb_rep_def + ["list", "rhos"]
 slater_pairs_rep_def = comp_rep_def + ["list"]
+# A Slater pair whose determinants are kept apart rather than summed with opposite signs:
+# structurally a plain list of compound representations, which is what a "concatenation"
+# level consumes. Same shape as slater_pairs_rep_def, named separately because it means
+# something different -- two determinants of ONE pair rather than several pairs.
+concatenated_pair_rep_def = comp_rep_def + ["list"]
 
 orb_rep_type = get_datatype(orb_rep_def)
 comp_rep_type = get_datatype(comp_rep_def)
@@ -38,34 +44,53 @@ slater_pairs_dict2rep = get_dict2datatype(slater_pairs_rep_def)
 
 comp_dict_list2reps = get_transform_list_dict2datatype(comp_rep_def)
 slater_pairs_dict_list2reps = get_transform_list_dict2datatype(slater_pairs_rep_def)
+concatenated_pair_dict_list2reps = get_transform_list_dict2datatype(concatenated_pair_rep_def)
 
 
 def fjk_rep_component_bounds(oml_rep_params=default_OML_rep_params):
-    max_angular_momentum = oml_rep_params.max_angular_momentum
-    distribution_component_present = not (
-        max_angular_momentum == 0 or oml_rep_params.odf_coup_mats
-    )
-    if distribution_component_present:
-        nregions = 4  # + angular moment distribution
-        lb_mat_range = max_angular_momentum
-        lb_mat_id = 1
-    else:
-        nregions = 3  # for F, J, and K matrices; or overlap, destiny, and Fock matrices
-        lb_mat_range = 0
-        lb_mat_id = 0
+    """Index ranges of the regions that are rescaled independently of one another.
 
+    One region per coupling channel AS STORED, preceded by the angular-momentum
+    distribution block unless there is a single angular momentum, where the distribution
+    carries no information. Each region receives its own length scale --
+    ``calc_hyperparameter_num`` returns one sigma per region -- so the list has to tile the
+    feature vector exactly.
+
+    "As stored" is the part worth stating. For FJD the channels are not the matrices that
+    went in: its three shifted-dipole components are contracted to one by the l2 merge, and
+    its bond projection carries no self block. A region list built from the matrix count
+    would leave the tail of every feature vector outside every region, and nothing
+    downstream re-checks the coverage -- so those features would silently lose their length
+    scale rather than raise.
+    """
+    max_angular_momentum = oml_rep_params.max_angular_momentum
     num_ang_mom_vals = max_angular_momentum + 1
+    self_block = (num_ang_mom_vals + 1) * num_ang_mom_vals // 2
+    other_block = num_ang_mom_vals**2
+
+    if oml_rep_params.fjd_coup_mats:
+        # F, J and the merged shifted-dipole channel, then the bond projection, whose self
+        # coupling vanishes identically and is not stored.
+        channel_sizes = [self_block + other_block] * 3 + [other_block]
+    else:
+        channel_sizes = [self_block + other_block] * 3  # F, J and K
+
+    distribution_component_present = max_angular_momentum != 0
+    nregions = len(channel_sizes) + int(distribution_component_present)
     bounds = empty_((nregions, 2), dtype=dint_)
-    for mat_id in range(3):
-        ub_mat_range = (
-            lb_mat_range + num_ang_mom_vals**2 + (num_ang_mom_vals + 1) * num_ang_mom_vals // 2
-        )
-        bounds[mat_id + lb_mat_id, 0] = lb_mat_range
-        bounds[mat_id + lb_mat_id, 1] = ub_mat_range
-        lb_mat_range = ub_mat_range
+
+    region_id = 0
+    lower_bound = 0
     if distribution_component_present:
         bounds[0, 0] = 0
         bounds[0, 1] = max_angular_momentum
+        lower_bound = max_angular_momentum
+        region_id = 1
+    for channel_size in channel_sizes:
+        bounds[region_id, 0] = lower_bound
+        bounds[region_id, 1] = lower_bound + channel_size
+        lower_bound += channel_size
+        region_id += 1
     return bounds
 
 
@@ -88,17 +113,42 @@ def processed_orb_rep(orb_rep: OML_orb_rep, local_representations=None):
 
 
 class FJKRepresentationCalc:
-    def __init__(self, oml_rep_params=default_OML_rep_params, local_representation_processor=None):
+    def __init__(
+        self,
+        oml_rep_params=default_OML_rep_params,
+        local_representation_processor=None,
+        concatenate_components=False,
+    ):
         """
         Converts an OML Compound with FJK representation into a datatype where:
         1. each atomic contribution to a localized orbital is given a vector.
         2. atomic contributions are grouped into weighted lists that represent a localized orbital
         3. a compound is represented by a weighed list of localized orbitals.
+
+        A Slater pair's two determinants can be combined in either of two ways, and the
+        choice is made here rather than in the SORF stack:
+
+        * `concatenate_components=False` (the default) puts both determinants' orbitals in
+          ONE weighted list and negates the first determinant's weights, so that whatever
+          sums over that list returns a DIFFERENCE of the two;
+        * `concatenate_components=True` keeps them apart, returning a list of two compound
+          representations for a "concatenation" level to lay end to end. The output is then
+          twice as long and the SORF stack needs that level with `num_components=2`.
+
+        Either way the ORDER of the determinants is part of the representation. The
+        difference is antisymmetric, so swapping them flips its sign; the concatenation is
+        not symmetric at all, so swapping them produces an unrelated vector. In both cases
+        the pairs must be built the same way round everywhere -- a training set assembled
+        as (gas, solvated) cannot be used to predict pairs assembled as (solvated, gas).
+
+        `concatenate_components=True` accepts nothing but an OML_Slater_pair: a single
+        compound has no components to concatenate, and OML_Slater_pairs is not supported.
         """
 
         self.oml_rep_params = oml_rep_params
         self.local_representation_processor = local_representation_processor
         self.local_rep_added = self.local_representation_processor is not None
+        self.concatenate_components = concatenate_components
 
     def append_orb_representations(self, list_in, rho_list, compound: OML_Compound):
         if self.local_rep_added:
@@ -115,9 +165,53 @@ class FJKRepresentationCalc:
 
         return local_representation_component_bounds
 
+    def single_compound_representation(self, compound: OML_Compound):
+        """One compound as a weighted list of its localized orbitals."""
+        orb_list = []
+        rho_list = []
+        local_rep_calc_bounds = self.append_orb_representations(orb_list, rho_list, compound)
+        return {"components": orb_list, "rhos": array_(rho_list)}, local_rep_calc_bounds
+
+    def component_bounds(self, local_rep_calc_bounds):
+        """Where one COMPONENT's rescaling regions are.
+
+        Unchanged by concatenation: the rescaling happens before the components are laid
+        end to end, so the regions describe one determinant either way and the number of
+        sigmas does not double.
+        """
+        bounds = fjk_rep_component_bounds(oml_rep_params=self.oml_rep_params)
+        if self.local_rep_added:
+            bounds += local_rep_calc_bounds[-1, -1]
+            bounds = concatenate_([local_rep_calc_bounds, bounds])
+        return bounds
+
     def calc_with_component_bounds(
         self, compound: OML_Compound | OML_Slater_pair | OML_Slater_pairs
     ):
+        if self.concatenate_components:
+            if not isinstance(compound, OML_Slater_pair) or isinstance(compound, OML_Slater_pairs):
+                raise OptionUnavailableError(
+                    "concatenate_components needs an OML_Slater_pair to have components to "
+                    f"concatenate; got {type(compound).__name__}"
+                )
+            compound.generate_orb_reps(rep_params=self.oml_rep_params)
+            # A plain list of the two determinants, in the order the pair was built. Nothing
+            # is negated and nothing is merged -- the "concatenation" level lays them end to
+            # end, so the order they appear in here is the order they appear in the features.
+            component_representations = []
+            local_rep_calc_bounds = None
+            for determinant in compound.comps:
+                representation, determinant_bounds = self.single_compound_representation(
+                    determinant
+                )
+                if self.local_rep_added:
+                    if local_rep_calc_bounds is None:
+                        local_rep_calc_bounds = determinant_bounds
+                    else:
+                        assert all_(local_rep_calc_bounds == determinant_bounds)
+                component_representations.append(representation)
+            return component_representations, self.component_bounds(local_rep_calc_bounds)
+
         if isinstance(compound, OML_Slater_pairs):
             output = []
             prev_bounds = None
@@ -149,15 +243,13 @@ class FJKRepresentationCalc:
             raise Exception
         rhos = array_(rho_list)
         if isinstance(compound, OML_Slater_pair):
+            # The first determinant enters negatively, so that summing over the merged list
+            # returns comps[1] - comps[0]. Antisymmetric: building the pair the other way
+            # round flips the sign of every feature.
             rhos[:nfirst] *= -1
         comp_rep = {"components": orb_list, "rhos": rhos}
 
-        bounds = fjk_rep_component_bounds(oml_rep_params=self.oml_rep_params)
-        if self.local_rep_added:
-            bounds += local_rep_calc_bounds[-1, -1]
-            bounds = concatenate_([local_rep_calc_bounds, bounds])
-
-        return comp_rep, bounds
+        return comp_rep, self.component_bounds(local_rep_calc_bounds)
 
 
 # Everything related to delta-nuclear-charge:

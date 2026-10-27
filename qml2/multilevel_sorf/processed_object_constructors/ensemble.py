@@ -1,7 +1,7 @@
 from ...ensemble import Ensemble
 from ...jit_interfaces import all_, empty_
 from ..base_constructors import get_transform_list_dict2datatype
-from .fjk import comp_rep_def
+from .fjk import comp_rep_def, concatenated_pair_rep_def
 from .standard import el_aug_rep_def
 
 
@@ -11,6 +11,10 @@ def comp2ensemble_rep_def(comp_rep_def):
 
 fjk_comp_ensemble_rep_def = comp2ensemble_rep_def(comp_rep_def)
 fjk_comp_ensemble_list_dict2datatype = get_transform_list_dict2datatype(fjk_comp_ensemble_rep_def)
+fjk_concatenated_pair_ensemble_rep_def = comp2ensemble_rep_def(concatenated_pair_rep_def)
+fjk_concatenated_pair_ensemble_list_dict2datatype = get_transform_list_dict2datatype(
+    fjk_concatenated_pair_ensemble_rep_def
+)
 
 global_rep_ensemble_rep_def = ["array_2D", "rhos", "list"]
 global_rep_ensemble_list_dict2datatype = get_transform_list_dict2datatype(

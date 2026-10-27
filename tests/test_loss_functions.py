@@ -52,6 +52,7 @@ def generate_loss_func_wargs_error_vectors(seed):
     loss_funcs_wargs = [
         ("MAE", standard_args),
         ("MSE", standard_args),
+        ("RMSE", standard_args),
         ("RescaledHuber", smooth_args),
         ("RescaledLogCosh", smooth_args),
         ("SelfConsistentHuber", self_consistent_args),
@@ -172,7 +173,91 @@ def test_loss_function_linear_error_minimization():
     )
 
 
+# Behaviour on inputs the grouped-CV aggregation layer produces: a macro-averaged objective
+# calls the loss once per group, so groups of one or two residuals reach it routinely.
+
+single_error_losses = {
+    "MAE": (loss_functions_dict["MAE"], ()),
+    "MSE": (loss_functions_dict["MSE"], ()),
+    "RMSE": (loss_functions_dict["RMSE"], ()),
+    "RescaledHuber": (loss_functions_dict["RescaledHuber"], (1.0,)),
+    "RescaledLogCosh": (loss_functions_dict["RescaledLogCosh"], (1.0,)),
+    "SelfConsistentHuber": (loss_functions_dict["SelfConsistentHuber"], (0.5,)),
+    "SelfConsistentHuberAnalytic": (loss_functions_dict["SelfConsistentHuberAnalytic"], (0.5,)),
+    "SelfConsistentLogCosh": (loss_functions_dict["SelfConsistentLogCosh"], (0.5,)),
+    "SquaredSelfConsistentHuber": (loss_functions_dict["SquaredSelfConsistentHuber"], (0.5,)),
+    "SquaredSelfConsistentLogCosh": (loss_functions_dict["SquaredSelfConsistentLogCosh"], (0.5,)),
+}
+
+
+def instantiated_losses():
+    return {name: cls(*args) for name, (cls, args) in single_error_losses.items()}
+
+
+def test_losses_on_a_single_error():
+    """Every loss must stay finite on one residual, value and gradient alike."""
+    for name, loss_function in instantiated_losses().items():
+        for errors in (np.array([0.7]), np.array([-2.5])):
+            value = loss_function(errors)
+            gradient_value, gradient = loss_function.calc_wders(errors)
+            assert np.isfinite(value), name
+            assert np.all(np.isfinite(gradient)), name
+            assert np.isclose(value, gradient_value, rtol=0.0, atol=1e-14), name
+
+
+def test_losses_on_zero_residuals():
+    """Zero residuals are a perfect fit, not a division by zero.
+
+    Regression: RMSE's gradient is err / (n * RMSE), which returned inf or nan at the
+    origin and propagated silently into whatever consumed it.
+    """
+    for name, loss_function in instantiated_losses().items():
+        for errors in (np.zeros(1), np.zeros(4)):
+            value, gradient = loss_function.calc_wders(errors)
+            assert np.isfinite(value) and abs(value) < 1.0e-30, name
+            assert np.all(np.isfinite(gradient)), name
+
+
+def test_loss_values_agree_with_their_gradient_calls():
+    """calc_wders must report the same value as __call__.
+
+    Regression: RMSE.calc_wders delegated to MSE.calc_wders, which returns `self(err_vals)`
+    -- and `self` is the RMSE instance, so __call__ dispatched back and the square root was
+    taken TWICE. The value was sqrt(RMSE) and the gradient was divided by it.
+    """
+    rng = int2rng(11)
+    errors = rng.normal(size=6)
+    for name, loss_function in instantiated_losses().items():
+        value, _ = loss_function.calc_wders(errors)
+        assert np.isclose(value, loss_function(errors), rtol=0.0, atol=1e-14), name
+
+
+def test_loss_gradients_against_finite_differences():
+    """Independent of the stored-checksum gradient test: catches a gradient that is
+    self-consistently wrong, as RMSE's was."""
+    rng = int2rng(12)
+    errors = rng.normal(size=5)
+    step = 1.0e-6
+    for name, loss_function in instantiated_losses().items():
+        _, gradient = loss_function.calc_wders(errors)
+        numeric = np.array(
+            [
+                (
+                    loss_function(errors + np.eye(errors.shape[0])[i] * step)
+                    - loss_function(errors - np.eye(errors.shape[0])[i] * step)
+                )
+                / (2 * step)
+                for i in range(errors.shape[0])
+            ]
+        )
+        assert np.allclose(gradient, numeric, rtol=1e-5, atol=1e-7), name
+
+
 if __name__ == "__main__":
     test_loss_functions()
     test_loss_function_gradients()
     test_loss_function_linear_error_minimization()
+    test_losses_on_a_single_error()
+    test_losses_on_zero_residuals()
+    test_loss_values_agree_with_their_gradient_calls()
+    test_loss_gradients_against_finite_differences()

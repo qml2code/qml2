@@ -98,3 +98,20 @@ ENV/
 
 # Other tmp files.
 *.tmp
+
+# embarrassingly_parallel's child-exec path creates tmpXXXXXXXX/ in the job's working
+# directory and removes it ONLY on success -- a failed run keeps it deliberately, because
+# the assertion it raises names the directory as the way to reproduce the failure. So these
+# accumulate wherever a parallel call has ever failed, and are never worth committing.
+tmp*/
+
+# BOSS writes these beside whatever invoked it, including pytest.
+l2reg_opt.out
+l2reg_opt.rst
+boss_sigmas_opt.out
+boss_sigmas_opt.rst
+
+# Vim swap files, which exist for as long as a file is open in an editor. The range covers
+# a second and third session on the same file: vim falls back .swp -> .swo -> .swn when a
+# swap file for that name already exists, so *.swp alone would let those through.
+*.sw[a-p]

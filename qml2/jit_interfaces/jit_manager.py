@@ -81,6 +81,7 @@ def get_jit_keywords(
     numba_fastmath=True,
     numba_nopython=True,
     numba_cache=False,
+    numba_inline="never",
 ):
     kws = {}
     for var_name, var in locals().items():
@@ -114,6 +115,8 @@ class defined_jit_:
         jit_keywords = get_jit_keywords(used_jit_name=self.used_jit_name, **other_keywords)
         if debug and self.used_jit_name == numba_flag:
             jit_keywords["debug"] = debug
+            jit_keywords["boundscheck"] = debug
+            jit_keywords["fastmath"] = not debug
         if "skip" in other_keywords:
             jit_keywords["local_skip_jit"] = other_keywords["skip"]
         if signature_or_function is None:

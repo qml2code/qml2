@@ -12,6 +12,7 @@ from .basic_utils import (
     loadpkl,
     rep_numba_parallel_env_var_name,
     run,
+    total_cpu_time,
 )
 from .jit_interfaces import get_default_jit, multiprocessing_, numba_flag
 
@@ -131,18 +132,62 @@ class ParallelHelper:
         return self.func(x, *self.other_args, **self.other_kwargs)
 
 
+class TimedParallelHelper(ParallelHelper):
+    """`ParallelHelper` that also reports the CPU time its call consumed.
+
+    Measured in the worker, around the call and nothing else, which is the point: it
+    excludes everything parallelizing costs rather than performs. With `fixed_num_threads`
+    that is a child interpreter's startup and its `qml2` import and Numba compilation, one
+    pool worker's worth of the same for every process, and the pickling of the arguments in
+    and the results out -- measured on ensembles of tight-binding calculations, about 2.5 s
+    for the child plus 1.2 s per worker, against 2 ms per element of pickling.
+
+    So a caller wanting to know what the WORK cost, rather than what this run of it cost,
+    cannot get there by subtracting the pickling: the pickling is the small part. Timing
+    the call itself is both more accurate and simpler.
+    """
+
+    def __call__(self, x):
+        start_cpu_time = total_cpu_time()
+        result = self.func(x, *self.other_args, **self.other_kwargs)
+        return result, total_cpu_time() - start_cpu_time
+
+
 def embarrassingly_parallel_no_thread_fix(
-    func, array, other_args, other_kwargs={}, num_procs=None, pool_start_method=None
+    func,
+    array,
+    other_args,
+    other_kwargs={},
+    num_procs=None,
+    pool_start_method=None,
+    return_cpu_time=False,
 ):
     if num_procs == 1:
+        if return_cpu_time:
+            output = []
+            func_cpu_time = 0.0
+            for element in array:
+                start_cpu_time = total_cpu_time()
+                output.append(func(element, *other_args, **other_kwargs))
+                func_cpu_time += total_cpu_time() - start_cpu_time
+            return output, func_cpu_time
         return [func(element, *other_args, **other_kwargs) for element in array]
     else:
+        if return_cpu_time:
+            helper_class = TimedParallelHelper
+        else:
+            helper_class = ParallelHelper
         p = check_get_global_mp_pool(num_procs, pool_start_method=pool_start_method)
         output = p.map(
-            ParallelHelper(func, *other_args, **other_kwargs),
+            helper_class(func, *other_args, **other_kwargs),
             array,
         )
         close_temp_mp_pool(p)
+        if return_cpu_time:
+            # Summed over workers: each entry was measured inside the worker that produced
+            # it, so the total is CPU seconds of work regardless of how many processes ran.
+            func_cpu_time = sum(element_cpu_time for _, element_cpu_time in output)
+            return [result for result, _ in output], func_cpu_time
         return output
 
 
@@ -154,11 +199,13 @@ def embarrassingly_parallel(
     num_procs=None,
     fixed_num_threads=None,
     pool_start_method=None,
+    return_cpu_time=False,
 ):
     """
     Find in parallel results of `[func(element, *other_args, **other_kwargs) for element in array]`. Additional keyword arguments are:
     - num_procs (int or None): if not None defines number of Python processes launched in parallel. If None the number is given by `multiprocessing.cpu_count()`.
     - fixed_num_threads (int or None): if not None the function launches the calculations in a child environment where OpenMP threads for all processes are set to fixed_num_threads.
+    - return_cpu_time (bool): if True return `(results, cpu_seconds)` instead of `results`, `cpu_seconds` being the CPU time spent inside the `func` calls themselves, summed over workers. See `TimedParallelHelper` for what that deliberately leaves out; in short, it is the cost of the work rather than the cost of this particular way of running it, and it does not grow with `num_procs`.
     """
     if type(other_args) is not tuple:
         other_args = (other_args,)
@@ -171,6 +218,7 @@ def embarrassingly_parallel(
             num_procs=num_procs,
             fixed_num_threads=fixed_num_threads,
             pool_start_method=pool_start_method,
+            return_cpu_time=return_cpu_time,
         )
     else:
         return embarrassingly_parallel_no_thread_fix(
@@ -180,11 +228,17 @@ def embarrassingly_parallel(
             other_kwargs=other_kwargs,
             num_procs=num_procs,
             pool_start_method=pool_start_method,
+            return_cpu_time=return_cpu_time,
         )
 
 
 def create_func_exec(
-    dump_filename, exec_scr_name, num_procs=None, fixed_num_threads=None, pool_start_method=None
+    dump_filename,
+    exec_scr_name,
+    num_procs=None,
+    fixed_num_threads=None,
+    pool_start_method=None,
+    return_cpu_time=False,
 ):
     # subprocess.run seems to have issues running commands of the type "QML2_NUM_PROCS=20 python bla.py"
     # we therefore modify the variables inside the run script
@@ -224,7 +278,9 @@ if __name__ == '__main__':
 
 \toutput=embarrassingly_parallel_no_thread_fix(executed["func"], executed["array"], executed["args"], other_kwargs=executed["other_kwargs"], pool_start_method='"""
         + pool_start_method
-        + """')
+        + """', return_cpu_time="""
+        + str(return_cpu_time)
+        + """)
 \tdump2pkl(output, dump_filename)
 """
     )
@@ -241,6 +297,7 @@ def create_run_func_exec(
     num_procs=None,
     fixed_num_threads=None,
     pool_start_method=None,
+    return_cpu_time=False,
 ):
     tmpdir = tempfile.TemporaryDirectory(dir=".", delete=False)
 
@@ -258,6 +315,7 @@ def create_run_func_exec(
         num_procs=num_procs,
         fixed_num_threads=fixed_num_threads,
         pool_start_method=pool_start_method,
+        return_cpu_time=return_cpu_time,
     )
     res = run(sys.executable, exec_scr_name, capture_output=True)
     assert res.returncode == 0, (

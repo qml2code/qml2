@@ -40,6 +40,13 @@ from .common import (
     get_routine_from_def,
     get_transform_list_dict2datatype,
 )
+from .compilation_parameters import (  # noqa: F401
+    COMPILATION_PARAMETERS_KEY,
+    compilation_token,
+    level_cache_name,
+    split_compilation_parameters,
+)
+from .representations import calculate_representation_lvl
 from .rescalings import full_rescaling_lvl, power_rescaling_lvl, rescaling_lvl
 from .sorf_related import (
     mixed_extensive_sorf_lvl,

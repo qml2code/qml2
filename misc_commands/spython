@@ -20,7 +20,15 @@ function flag_val(){
 
 slurmconf_file="/etc/slurm/slurm.conf"
 
-if [ -f "$slurmconf_file" ]
+# SPYTHON_ASSUMED_NCPUS overrides what the node reports. Detection gives the number of
+# CPUs that EXIST, which is the right default for a job that scales, and the wrong one for
+# a job whose parallel efficiency falls off well before that -- so it is worth being able
+# to say so from the submitting script without editing this one. An explicit --CPUs= still
+# wins over both.
+if [ ! -z "$SPYTHON_ASSUMED_NCPUS" ]
+then
+    NCPUs=$SPYTHON_ASSUMED_NCPUS
+elif [ -f "$slurmconf_file" ]
 then
 	NCPUs=$(scontrol show node $(hostname) | awk 'BEGIN {FS="="}{if ($1 == "   CfgTRES" && $2 == "cpu") print $3}' | cut -d',' -f1)
 else
@@ -39,6 +47,7 @@ USE_CURRENT_DIR=0
 conda_env=$CONDA_DEFAULT_ENV
 PIPE_ARGS=0
 array=""
+USER_DEPSTRING=""
 
 if [ "$SPYTHON_NO_SLURM" == "" ]
 then
@@ -68,6 +77,12 @@ do
             array=$(flag_val $1);;
         --export_env_vars=*)
             EXPORT_ENV_VARS=$(flag_val $1);;
+        --dependency=*)
+            # Passed straight to sbatch, so any of its forms work: afterok:123,
+            # afterany:123:456, singleton. Needed because the chaining below only links
+            # jobs submitted by ONE invocation, which therefore all share --CPUs and
+            # --OMP_NUM_THREADS -- no use for a pipeline whose stages want different ones.
+            USER_DEPSTRING="--dependency=$(flag_val $1)";;
         --*)
             echo "Unknown flag: $1"
             exit
@@ -217,7 +232,13 @@ EOF
 
 if [ "$SPYTHON_NO_SLURM" == "0" ]
 then
-    SLURM_ID=$(sbatch $array_arg $DEPSTRING $EXNAME | awk '{print $4}')
+    # DEPSTRING is set below after the first job of THIS invocation, so a --pipe_args run
+    # still chains its own jobs; --dependency only supplies the link for the first one,
+    # which is the one that has nothing to chain onto.
+    SLURM_ID=$(sbatch $array_arg ${DEPSTRING:-$USER_DEPSTRING} $EXNAME | awk '{print $4}')
+    # Printed in a form a submitting script can grep for, since sbatch's own line is
+    # swallowed by the capture above and there is otherwise no way to learn the id.
+    echo "SPYTHON_SUBMITTED_JOB_ID: $SLURM_ID $job_name"
     DEPSTRING="--dependency=afterok:$SLURM_ID"
 else
     chmod +x $EXNAME

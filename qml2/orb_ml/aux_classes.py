@@ -1,3 +1,4 @@
+import numpy as np
 from pyscf import scf
 
 negligible_coord_diff = 1.0e-8
@@ -140,25 +141,188 @@ def generate_ao_arr(mol):
 
 # Contains the same data as a pySCF Mean Field (MF) object.
 class PseudoMF:
-    def __init__(self, e_tot=None, mo_coeff=None, mo_occ=None, mo_energy=None):
+    def __init__(
+        self,
+        e_tot=None,
+        mo_coeff=None,
+        mo_occ=None,
+        mo_energy=None,
+        h0_mat=None,
+        channel_occupations=None,
+        representation_spin=None,
+        xtb_mo_occ=None,
+        xtb_charges=None,
+    ):
         self.e_tot = e_tot
         self.mo_coeff = mo_coeff
         self.mo_occ = mo_occ
         self.mo_energy = mo_energy
+        # How the electrons divide between the two spin channels, one row each, where the
+        # backend is able to say. `mo_occ` sums the two for a spin-restricted calculation
+        # because that is the shape the rest of the module expects, and summing throws the
+        # division away -- recovering it by thresholding the sum is guesswork that fails on
+        # fractional occupations. Kept here so OML_Compound.adjust_spin_mo_occ can use the
+        # real answer instead. None for a backend that does not provide one.
+        self.channel_occupations = channel_occupations
+        # Multiplicity of the state being represented, where it differs from the one that
+        # was calculated -- an excitation of a single electron leaves the two spin channels
+        # holding different numbers of electrons even when the calculation was closed-shell.
+        # None where the backend has nothing to say, in which case the compound's own `spin`
+        # stands.
+        self.representation_spin = representation_spin
+        # The backend's OWN occupations, exactly as it reported them, before they were
+        # refilled from the orbital ordering (see tblite_interface.aufbau_channel_
+        # occupations). Kept because the refilling deliberately discards the smearing, and
+        # the smearing is what the backend's other results -- its charges above all -- were
+        # computed from. Not spin-channel adjusted: this is the raw array.
+        self.xtb_mo_occ = xtb_mo_occ
+        # Atomic partial charges as the backend computed them. Recoverable by Mulliken
+        # analysis of the stored density, but only up to the difference the refilling makes
+        # (8.7e-04 per atom on a smeared molecule), so the backend's own numbers are kept
+        # rather than reconstructed.
+        self.xtb_charges = xtb_charges
+        # The backend's zeroth-order (charge-independent, pre-SCF) Hamiltonian, where it
+        # has one. NOT pySCF's hcore, which is the kinetic + nuclear-attraction operator:
+        # a tight-binding H0 additionally carries the parametrized off-diagonal couplings.
+        # Kept under its own name so the two are not silently interchanged.
+        self.h0_mat = h0_mat
 
 
 # Stores data and mimics pySCF's Mole object when used in Pipek-Mezey localization
 # or some other instances throughout the orb_ml module.
 class PseudoMole:
-    def __init__(self, ovlp_mat, atom_ao_ranges, angular_momenta):
+    """A Mole-shaped view of a calculation whose AO data comes from elsewhere.
+
+    The overlap matrix, the atom-to-AO partition and the angular momenta are supplied by
+    the backend (tblite, say) and used AS GIVEN: no reordering, no renormalization. That
+    is the point of the class -- everything downstream, Pipek-Mezey included, then works
+    in one AO convention, the backend's, with no map anywhere.
+
+    Operators the backend does not provide are a separate matter. If a basis is supplied
+    (``basis``, ``nuclear_charges`` and ``coordinates``), a real pySCF ``Mole`` is built
+    lazily on the first such request and its integrals are converted into the backend's
+    convention before being returned -- see :meth:`intor`. ``int1e_ovlp`` never takes that
+    route: the backend's own overlap is authoritative and is returned directly, which also
+    makes it the reference the conversion is validated against
+    (``sanity_checks/tblite/check_gfn2_overlap.py``).
+    """
+
+    def __init__(
+        self,
+        ovlp_mat,
+        atom_ao_ranges,
+        angular_momenta,
+        nuclear_charges=None,
+        coordinates=None,
+        basis=None,
+        component_order=None,
+    ):
         # Relevant data
         self.natm = len(atom_ao_ranges)
         self.ovlp_mat = ovlp_mat
         self.atom_ao_ranges = atom_ao_ranges
         self.angular_momenta = angular_momenta
+        # Everything needed to rebuild this basis inside pySCF, for integrals the backend
+        # does not expose. Optional: without them the class behaves exactly as before.
+        self.nuclear_charges = nuclear_charges
+        self.coordinates = coordinates  # Bohr, as the backends use
+        # A pySCF basis dict, or a callable returning one. Callable is the useful form:
+        # building it can need library calls the backend only supports in newer versions,
+        # and a PseudoMole that is never asked for a pySCF integral must not pay that cost
+        # -- nor fail on a backend too old to answer.
+        self.basis = basis
+        # {l: tuple} reordering pySCF's components of each l into the backend's order.
+        self.component_order = {} if component_order is None else component_order
+        self.mol = None  # the real pySCF Mole, built on first use by init_mol()
         # Irrelevant attributes only there to pass some of pySCF's checks.
         self.verbose = False
         self.stdout = "PseudoStdout"
+
+    def init_mol(self):
+        """Build (once) a real pySCF ``Mole`` over the same basis and geometry.
+
+        ``spin`` is set from the electron-count parity rather than left at 0: pySCF counts
+        electrons from the true nuclear charges, which for a valence-only backend basis has
+        nothing to do with the physical occupation, and ``build()`` refuses an odd count
+        with ``spin=0``. Core shells always come in pairs, so the parity is still right.
+        Nothing here should be read for occupations -- only for integrals.
+        """
+        if self.mol is not None:
+            return self.mol
+        if self.basis is None or self.coordinates is None or self.nuclear_charges is None:
+            raise Exception(
+                "PseudoMole was built without basis/geometry, so only the backend's own "
+                "matrices are available; pass nuclear_charges, coordinates and basis to "
+                "enable pySCF integrals."
+            )
+        from pyscf import gto
+
+        basis = self.basis() if callable(self.basis) else self.basis
+        mol = gto.Mole()
+        mol.atom = [
+            [int(charge), tuple(float(x) for x in coordinate)]
+            for charge, coordinate in zip(self.nuclear_charges, self.coordinates)
+        ]
+        mol.basis = basis
+        mol.unit = "Bohr"
+        mol.cart = False
+        mol.spin = int(sum(int(charge) for charge in self.nuclear_charges)) % 2
+        mol.build(verbose=0)
+        self.mol = mol
+        return self.mol
+
+    def atom_coords(self):
+        """Nuclear coordinates in Bohr, as pySCF's ``Mole.atom_coords`` returns them.
+
+        Same name and units as the real thing, so code recentring an operator on the atom
+        owning each AO does not care which of the two it was handed.
+        """
+        return self.coordinates
+
+    def ao_conversion_factors(self):
+        """Per-AO scale taking pySCF-normalized functions to the backend's normalization.
+
+        pySCF renormalizes every contraction to unit self-overlap; a backend using tabulated
+        contraction coefficients as published need not, so its diagonal sits at 1 to the
+        tables' precision rather than exactly. The ratio is a property of the basis
+        functions, so it applies to any operator, not just the overlap.
+        """
+        return np.sqrt(np.diag(self.ovlp_mat))
+
+    def ao_order(self):
+        """Index array reordering pySCF's AOs into the backend's order."""
+        order = np.arange(len(self.angular_momenta))
+        for atom_range in self.atom_ao_ranges:
+            position = atom_range[0]
+            while position < atom_range[1]:
+                l = int(self.angular_momenta[position])
+                size = 2 * l + 1
+                permutation = self.component_order.get(l)
+                if permutation is not None:
+                    block = order[position : position + size]
+                    order[position : position + size] = block[list(permutation)]
+                position += size
+        return order
+
+    def converted_from_pyscf(self, matrices):
+        """Reorder and rescale pySCF integrals into the backend's AO convention."""
+        order = self.ao_order()
+        factors = self.ao_conversion_factors()
+        outer = np.outer(factors, factors)
+        matrices = np.asarray(matrices)
+        if matrices.ndim == 2:
+            return matrices[np.ix_(order, order)] * outer
+        return np.array([block[np.ix_(order, order)] * outer for block in matrices])
+
+    def intor(self, keyword, **kwargs):
+        """A pySCF integral, expressed in the backend's AO convention.
+
+        ``int1e_ovlp`` short-circuits to the backend's own matrix -- it is the reference,
+        not something to recompute.
+        """
+        if keyword == "int1e_ovlp":
+            return self.ovlp_mat
+        return self.converted_from_pyscf(self.init_mol().intor(keyword, **kwargs))
 
     # The returned tuples are boundary indices of shells (first two entries) and atomic orbitals (second
     # pair of entries) correponding to a given atom. Since shell indices are not used in the localization procedure
@@ -176,8 +340,7 @@ class PseudoMole:
                 output.append((atom_id, self.angular_momenta[ao_id]))
         return output
 
-    # We only know overlap integrals.
-    def intor_symmetric(self, keyword):
-        if keyword != "int1e_ovlp":
-            raise Exception("Unimplemented option for PseudoMole class.")
-        return self.ovlp_mat
+    def intor_symmetric(self, keyword, **kwargs):
+        # The backend's overlap is what Pipek-Mezey and the representation code consume;
+        # anything else is routed through the lazily built pySCF Mole by intor().
+        return self.intor(keyword, **kwargs)

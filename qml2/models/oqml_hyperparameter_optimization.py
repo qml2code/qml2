@@ -1,7 +1,7 @@
 from ..jit_interfaces import sum_
 from ..kernels.gradient_kernels import local_dn_oqml_gaussian_kernel_symmetric
 from ..utils import multiply_transposed
-from .hyperparameter_optimization import KFolds, KFoldsMultipleObservables
+from .kfolds import GroupKFoldsMultipleObservables, conformer_folds
 from .sorf_hyperparameter_optimization import callable_ninv_MAE_local_dn_forces_SORF
 
 
@@ -51,10 +51,23 @@ class callable_ninv_MAE_local_dn_OQML(callable_ninv_MAE_local_dn_forces_SORF):
         multiply_transposed(output_matrix, self.importance_multipliers)
         return output_matrix
 
-    def init_kfolds(self, nkfolds=8, training_set_ratio=0.5):
-        mol_kfolds = KFolds(self.training_set_size, nkfolds, training_set_ratio=training_set_ratio)
+    def init_kfolds(self, nkfolds=8, training_set_ratio=0.5, conformer_group_ids=None):
+        """One conformer-level split, expanded twice.
+
+        The observables index the ROWS of the OQML matrix and the atoms index its COLUMNS,
+        so both expansions have to come from the same conformer split. Building them
+        independently would let them disagree about which conformer went where -- the
+        greedy fold fill balances on block size, and a conformer's observable block
+        (3*natoms + 1) and atom block (natoms) are different sizes -- and the model would
+        then be validated on rows it had partly trained on.
+
+        ``training_set_ratio`` is ignored; see the parent's init_kfolds.
+        """
+        mol_kfolds = conformer_folds(
+            self.training_set_size, nkfolds, conformer_group_ids=conformer_group_ids
+        )
         super().init_kfolds(mol_kfolds=mol_kfolds)
-        self.atom_kfolds = KFoldsMultipleObservables(self.training_natoms, mol_kfolds=mol_kfolds)
+        self.atom_kfolds = GroupKFoldsMultipleObservables(self.training_natoms, mol_kfolds)
 
     def kfold_train_test_sorf_matrices(self, full_sorf_matrix, kfold_id):
         train_indices, test_indices = self.kfolds.train_test_indices(kfold_id)

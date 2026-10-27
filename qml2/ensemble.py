@@ -128,7 +128,14 @@ class Ensemble:
             return False
         success = os.path.isfile(filename)
         if success:
-            setattr(self, attr_name, loadpkl(filename))
+            # As in OML_Compound.check_saved_files: an unreadable savefile counts as
+            # missing, so the conformers are regenerated rather than the job dying.
+            try:
+                setattr(self, attr_name, loadpkl(filename))
+            except Exception as loading_error:
+                print("WARNING: could not read", filename, "-", loading_error)
+                print("WARNING: regenerating it instead")
+                success = False
         return success
 
     def save_attr2pkl(self, attr_name, file_suffix=None):

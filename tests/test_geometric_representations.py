@@ -9,12 +9,21 @@ ntest_mols = 2000
 
 
 def checksums_single_representation(
-    rep_func_name, rng, checksums_storage, local=False, rep_kwargs={}
+    rep_func_name, rng, checksums_storage, local=False, rep_kwargs={}, rep_func=None
 ):
     xyzs = perturbed_xyz_examples(rng, ntest_mols)
     compound_list = CompoundList([Compound(xyz=xyz) for xyz in xyzs])
-    call = getattr(compound_list, rep_func_name)
-    call(test_mode=True, **rep_kwargs)
+    # `rep_func` lets a caller substitute its own representation callable for the named
+    # CompoundList method -- what tests/test_numba_calculators.py needs in order to drive the
+    # JIT (prange-callable) calculators through exactly the same checksum comparison as the
+    # ordinary representations. None keeps the original behaviour.
+    if rep_func is None:
+        call = getattr(compound_list, rep_func_name)
+        call_extra_args = ()
+    else:
+        call = compound_list.generate_rep_from_func
+        call_extra_args = (rep_func,)
+    call(*call_extra_args, test_mode=True, **rep_kwargs)
     all_representations = compound_list.all_representations()
     if local:
         merged_reps = concatenate_(all_representations)

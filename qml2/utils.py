@@ -28,12 +28,15 @@ from .jit_interfaces import (
     is_scalar_,
     jit_,
     logical_not_,
+    matmul_,
     max_,
+    maximum_,
     min_,
     ndarray_,
     optional_ndarray_,
     prange_,
     searchsorted_,
+    sqrt_,
     square_,
     sum_,
     unique_,
@@ -199,6 +202,33 @@ def all_l2_sq_norms(vecs):
     for i in prange_(nvecs):
         sq_norms[i] = l2_sq_norm(vecs[i])
     return sq_norms
+
+
+def nearest_neighbour_distances(representations, train_indices, test_indices):
+    """Min l2 distance from each TEST row of `representations` to the TRAIN rows.
+
+    Returned in the order of `test_indices`. Nothing here is chemistry-specific -- the rows
+    are whatever feature vectors the caller has -- which is why it lives beside the other
+    l2 helpers rather than with the split diagnostics that use it.
+
+    Computed via ||a - b||^2 = ||a||^2 + ||b||^2 - 2 a.b, so the whole thing is one matrix
+    product. The obvious loop -- subtract the training block from each test vector in turn
+    -- builds an (ntrain, nfeatures) temporary per test row, which for a SLATM of 123106
+    features and 474 training points is about 470 MB allocated once per test row. That
+    alone is the difference between this running in seconds and in minutes.
+
+    Deliberately NOT jit-compiled: the cost is the matrix product, which is already BLAS,
+    and `train_block.T` is non-contiguous so numba would only add a copy and a warning.
+    """
+    train_block = representations[train_indices]
+    test_block = representations[test_indices]
+    square_distances = (
+        all_l2_sq_norms(test_block)[:, None]
+        + all_l2_sq_norms(train_block)[None, :]
+        - 2.0 * matmul_(test_block, train_block.T)
+    )
+    # Cancellation can push a near-zero entry slightly negative, and sqrt would give nan.
+    return sqrt_(min_(maximum_(square_distances, 0.0), axis=1))
 
 
 @jit_

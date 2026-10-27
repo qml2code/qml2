@@ -1,6 +1,7 @@
 from numba import float64, int64
 
-from ...jit_interfaces import copy_, empty_, jit_, reshape_
+from ...jit_interfaces import array_, copy_, dint_, empty_, jit_, reshape_
+from ...representations.numba_calculators import CONFORMER_CLASS, CONFORMER_WLOCALREP_CLASS
 from ..utils import jitclass_
 
 # Naming convention
@@ -55,6 +56,166 @@ for dim in range(1, 4):
     # default copying procedures
     for copy_pref in ["", "r", "j"]:
         globals()[copy_pref + "copy_array_" + ending] = copy_
+
+
+# Conformer datatypes -- the LEAF a representation-calculating level starts from.
+#
+# Everything above is an array: a level receives feature vectors and returns feature vectors. A
+# level that computes a representation inside the parallel loop instead starts from the geometry, so
+# the machinery needs the numba conformer classes registered as datatypes in their own right.
+#
+# `Conformer` carries nuclear charges and coordinates. `ConformerWLocalRepresentation` adds a
+# `representation` array that had to be computed OUTSIDE the jit -- tblite charges, for instance --
+# so a level can combine a freshly computed representation with a pre-computed one without leaving
+# the loop.
+#
+# Created eagerly here, unlike in numba_calculators where the factory exists because a jitclass is
+# not picklable: this module's copy is a process-wide singleton that is never pickled (nothing
+# pickles `default_class_instances`), and both classes build in under a millisecond. Holding one
+# instance of each type also matters for correctness -- two calls to the factory produce two
+# DISTINCT numba types, and a function compiled against one will not accept the other.
+Conformer = CONFORMER_CLASS
+ConformerWLocalRepresentation = CONFORMER_WLOCALREP_CLASS
+
+conformer_ = Conformer.class_type.instance_type
+conformer_wlocalrep_ = ConformerWLocalRepresentation.class_type.instance_type
+
+
+def default_conformer():
+    """Minimal one-atom instance, the counterpart of `default_array` for this datatype."""
+    return Conformer(empty_((1,), dtype=dint_), empty_((1, 3)))
+
+
+def default_conformer_wlocalrep(nfeatures=1):
+    return ConformerWLocalRepresentation(
+        empty_((1,), dtype=dint_), empty_((1, 3)), empty_((1, nfeatures))
+    )
+
+
+@jit_
+def copy_conformer(conformer):
+    """A conformer is a jitclass, so copying it means reconstructing it -- `copy_` works on the
+    arrays above but not on an instance. Deep, like the array copies: the new object shares nothing
+    with the old one."""
+    return Conformer(copy_(conformer.nuclear_charges), copy_(conformer.coordinates))
+
+
+@jit_
+def copy_conformer_wlocalrep(conformer):
+    return ConformerWLocalRepresentation(
+        copy_(conformer.nuclear_charges),
+        copy_(conformer.coordinates),
+        copy_(conformer.representation),
+    )
+
+
+# The REDUCABLE twins, and the reason the `reddt_` half of a datatype exists at all.
+#
+# A jitclass instance cannot be pickled and has no useful `__dict__`. Both matter here: an object
+# produced in a worker process has to cross a process boundary to reach the parent, and
+# `recursive_class_dict` walks `__dict__` to turn a datatype back into plain data. So the `reddt_`
+# form is a PLAIN PYTHON class holding the same fields, and `jcopy_` converts one into the real
+# jitclass -- in the parent, after any pickling is done. `convert_dict_list` wraps a worker's dict in
+# a generic `ConvertedDict` with exactly these attributes, so a constructor that reads attributes
+# rather than keys serves both.
+#
+# For the array datatypes `dt_` and `reddt_` can point at the same thing, because a numpy array is
+# already picklable and already plain. A jitclass is neither, which is why these need real twins.
+class ReducableConformer:
+    def __init__(self, nuclear_charges, coordinates):
+        self.nuclear_charges = nuclear_charges
+        self.coordinates = coordinates
+
+
+class ReducableConformerWLocalRepresentation(ReducableConformer):
+    def __init__(self, nuclear_charges, coordinates, representation):
+        super().__init__(nuclear_charges, coordinates)
+        self.representation = representation
+
+
+def default_reducable_conformer():
+    return ReducableConformer(empty_((1,), dtype=dint_), empty_((1, 3)))
+
+
+def default_reducable_conformer_wlocalrep(nfeatures=1):
+    return ReducableConformerWLocalRepresentation(
+        empty_((1,), dtype=dint_), empty_((1, 3)), empty_((1, nfeatures))
+    )
+
+
+# jcopy_: reducable -> jit. NOT jitted, deliberately -- its argument is a plain Python object, often a
+# `ConvertedDict` built straight from a worker's dictionary, which numba cannot type. The dtypes are
+# coerced rather than trusted because whatever produced the dict is outside this module's control.
+def jcopy_conformer(reducable):
+    return Conformer(
+        array_(reducable.nuclear_charges, dtype=dint_), array_(reducable.coordinates, dtype=float)
+    )
+
+
+def jcopy_conformer_wlocalrep(reducable):
+    return ConformerWLocalRepresentation(
+        array_(reducable.nuclear_charges, dtype=dint_),
+        array_(reducable.coordinates, dtype=float),
+        array_(reducable.representation, dtype=float),
+    )
+
+
+# rcopy_: jit -> reducable. Also un-jitted, and the direction `get_datatype2dict` needs.
+def rcopy_conformer(conformer):
+    return ReducableConformer(copy_(conformer.nuclear_charges), copy_(conformer.coordinates))
+
+
+def rcopy_conformer_wlocalrep(conformer):
+    return ReducableConformerWLocalRepresentation(
+        copy_(conformer.nuclear_charges),
+        copy_(conformer.coordinates),
+        copy_(conformer.representation),
+    )
+
+
+# Registered under the same naming convention as the arrays, so a datatype level can name them and
+# `get_precomputed_quant` can find them. Unlike the arrays, `dt_` and `reddt_` differ, and the three
+# copy prefixes are three DIFFERENT procedures: `copy_` stays inside numba, `jcopy_` and `rcopy_`
+# cross the boundary and so must not be jitted.
+for (
+    _dt_name,
+    _dt_type,
+    _dt_default,
+    _red_default,
+    _copy,
+    _jcopy,
+    _rcopy,
+) in [
+    (
+        "conformer_",
+        conformer_,
+        default_conformer,
+        default_reducable_conformer,
+        copy_conformer,
+        jcopy_conformer,
+        rcopy_conformer,
+    ),
+    (
+        "conformer_wlocalrep_",
+        conformer_wlocalrep_,
+        default_conformer_wlocalrep,
+        default_reducable_conformer_wlocalrep,
+        copy_conformer_wlocalrep,
+        jcopy_conformer_wlocalrep,
+        rcopy_conformer_wlocalrep,
+    ),
+]:
+    _jit_name = datatype_prefix + "_" + _dt_name
+    globals()[_jit_name] = _dt_type
+    default_class_instances[_jit_name] = _dt_default()
+
+    _red_name = red_datatype_prefix + "_" + _dt_name
+    globals()[_red_name] = _red_default().__class__
+    default_class_instances[_red_name] = _red_default()
+
+    globals()["copy_" + _dt_name] = _copy
+    globals()["jcopy_" + _dt_name] = _jcopy
+    globals()["rcopy_" + _dt_name] = _rcopy
 
 
 # Naming convention

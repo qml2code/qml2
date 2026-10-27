@@ -38,6 +38,11 @@ from .base import (
     red_datatype_prefix,
     red_input_object_prefix,
 )
+from .compilation_parameters import (
+    call_level_addition,
+    compilation_parameters_for_level,
+    level_cache_name,
+)
 from .fork import fork_lvl, inp_add_fork
 from .rescalings import power_rescaling_lvl, rescaling_lvl
 from .sorf_related import (
@@ -67,6 +72,7 @@ def set_add_dicts():
     addition_sources = [
         "datatypes",
         "fork",
+        "representations",
         "rescalings",
         "sorf_related",
         "special",
@@ -107,13 +113,42 @@ def get_fork_processed_lists(processed_definition_list):
     return tuple([[prefix] + l for l in fork_tuple])
 
 
-def get_name_from_definition_list(processed_definition_list):
+def get_name_from_definition_list(processed_definition_list, compilation_parameter_list=None):
+    """Cache key for a routine or class built from this definition list.
+
+    ``compilation_parameter_list`` is parallel to the LEVELS (so offset by one from the processed
+    list, whose first entry is the prefix). Any level carrying compilation parameters contributes a
+    token, because the generated function genuinely differs and the memo in this module's globals is
+    keyed on nothing else -- two models differing only in an activation function would otherwise
+    share one compiled routine. A level with no compilation parameters contributes exactly the name
+    it always did, so every pre-existing key is unchanged.
+    """
     if not isinstance(processed_definition_list[1], tuple):
-        return join_wtail(processed_definition_list)
+        if not compilation_parameter_list:
+            return join_wtail(processed_definition_list)
+        prefix, *levels = processed_definition_list
+        annotated = [
+            level_cache_name(lvl, compilation_parameters_for_level(compilation_parameter_list, i))
+            for i, lvl in enumerate(levels)
+        ]
+        return join_wtail([prefix, *annotated])
     output = ""
-    for l in get_fork_processed_lists(processed_definition_list):
-        output = output + get_name_from_definition_list(l)
-    return output + join_wtail(processed_definition_list[2:])
+    forked_compilation = None
+    if compilation_parameter_list:
+        entry = compilation_parameter_list[0]
+        forked_compilation = entry if isinstance(entry, tuple) else None
+    for i, l in enumerate(get_fork_processed_lists(processed_definition_list)):
+        branch = forked_compilation[i] if forked_compilation is not None else None
+        output = output + get_name_from_definition_list(l, branch)
+    tail = processed_definition_list[2:]
+    if compilation_parameter_list and tail:
+        tail = [
+            level_cache_name(
+                lvl, compilation_parameters_for_level(compilation_parameter_list, i + 1)
+            )
+            for i, lvl in enumerate(tail)
+        ]
+    return output + join_wtail(tail)
 
 
 def join_wtail(str_list):
@@ -181,9 +216,33 @@ def setup_class(processed_definition_list):
     default_class_instances[class_name] = new_class_example
 
 
-def get_precomputed_quant(processed_definition_list, storage_dict, setup_routine, **other_kwargs):
-    class_name = get_name_from_definition_list(processed_definition_list)
+def get_precomputed_quant(
+    processed_definition_list,
+    storage_dict,
+    setup_routine,
+    compilation_parameter_list=None,
+    **other_kwargs,
+):
+    """Memoise by name. ``compilation_parameter_list`` reaches BOTH the key and the setup routine:
+    the key because the built object differs, the setup routine because it is what bakes the
+    parameters in. ``None`` reproduces the behaviour from before compile-time parameters existed.
+
+    TODO (design, deferred): ``storage_dict`` is this module's ``globals()`` for every routine, so a
+    constructed function has PROCESS lifetime -- building a fresh ``MultilevelSORF`` reuses whatever a
+    previous one left here, and only a new process starts clean. That is fine while the name fully
+    determines the object, and it is why the name has to absorb compile-time parameters. It stops
+    being fine for a closure, whose baked-in values ``module.qualname`` cannot see: see
+    ``compilation_parameters.set_compilation_identity`` for the opt-in patch and
+    ``multilevel_sorf/AGENTS.md`` for why a cache owned by the model, or by an explicit registry,
+    would retire the problem instead. Safe meanwhile because the convention is one model type per
+    process.
+    """
+    class_name = get_name_from_definition_list(
+        processed_definition_list, compilation_parameter_list
+    )
     if class_name not in storage_dict:
+        if compilation_parameter_list:
+            other_kwargs["compilation_parameter_list"] = compilation_parameter_list
         setup_routine(processed_definition_list, **other_kwargs)
     return storage_dict[class_name]
 
@@ -247,23 +306,37 @@ def get_inside_copy_obj_class(processed_definition_list):
         )
 
 
-def get_nested_routine_tuple(processed_definition_list):
+def get_nested_routine_tuple(processed_definition_list, compilation_parameter_list=None):
     is_fork = fork_here(processed_definition_list)
     if is_fork:
+        forked_compilation = None
+        if compilation_parameter_list:
+            entry = compilation_parameter_list[0]
+            forked_compilation = entry if isinstance(entry, tuple) else None
         return tuple(
             [
-                get_routine(forked_def)
-                for forked_def in get_fork_processed_lists(processed_definition_list)
+                get_routine(
+                    forked_def,
+                    None if forked_compilation is None else forked_compilation[i],
+                )
+                for i, forked_def in enumerate(get_fork_processed_lists(processed_definition_list))
             ]
         )
     else:
-        return (get_routine(processed_definition_list[:-1]),)
+        # the nested routine is this definition list minus its last level, so its compilation list
+        # is this one minus its last entry -- the same slicing create_input_object already uses.
+        nested_compilation = (
+            compilation_parameter_list[:-1] if compilation_parameter_list else None
+        )
+        return (get_routine(processed_definition_list[:-1], nested_compilation),)
 
 
 # final procedures for getting routines.
-def setup_routine(processed_function_definition_list):
+def setup_routine(processed_function_definition_list, compilation_parameter_list=None):
     assert len(processed_function_definition_list) != 1, processed_function_definition_list
-    function_name = get_name_from_definition_list(processed_function_definition_list)
+    function_name = get_name_from_definition_list(
+        processed_function_definition_list, compilation_parameter_list
+    )
 
     is_fork = fork_here(processed_function_definition_list)
 
@@ -284,28 +357,59 @@ def setup_routine(processed_function_definition_list):
         )
     else:
         function_level_addition = function_level_additions[lvl_name]
-    nested_args = nested_fetcher(processed_function_definition_list)
-    new_function = function_level_addition(processed_function_definition_list, *nested_args)
+    if nested_fetcher is get_nested_routine_tuple:
+        nested_args = nested_fetcher(
+            processed_function_definition_list, compilation_parameter_list
+        )
+    else:
+        # The COPY path (get_inside_copy_obj_class) is deliberately NOT threaded. Copying an input
+        # object does not depend on what was baked into the level's compute function, so its nested
+        # routines keep their untokened names and their existing cache entries. This level's own copy
+        # routine still gets a tokened NAME, because setup_routine computed the name with the
+        # compilation list -- harmless, just a separate entry. Revisit only if a level ever needs its
+        # copy routine to know a baked-in callable; nothing does today.
+        nested_args = nested_fetcher(processed_function_definition_list)
+    # This level's own parameters are the last entry; the nested ones went down with the recursion.
+    own_compilation = compilation_parameters_for_level(compilation_parameter_list)
+    new_function = call_level_addition(
+        function_level_addition,
+        processed_function_definition_list,
+        nested_args,
+        own_compilation,
+    )
 
     globals()[function_name] = new_function
 
 
-def get_routine(processed_function_definition_list):
-    return get_precomputed_quant(processed_function_definition_list, globals(), setup_routine)
+def get_routine(processed_function_definition_list, compilation_parameter_list=None):
+    return get_precomputed_quant(
+        processed_function_definition_list,
+        globals(),
+        setup_routine,
+        compilation_parameter_list=compilation_parameter_list,
+    )
 
 
 def get_class_from_def(function_definition_list, prefix):
     return get_class(get_processed_definition_list(function_definition_list, prefix))
 
 
-def get_routine_from_def(function_definition_list, gradient=False):
+def get_routine_from_def(
+    function_definition_list, gradient=False, compilation_parameter_list=None
+):
     if gradient:
         prefix = gradient_function_prefix
     else:
         prefix = function_prefix
-    return get_routine(get_processed_definition_list(function_definition_list, prefix))
+    return get_routine(
+        get_processed_definition_list(function_definition_list, prefix), compilation_parameter_list
+    )
 
 
+# COPY routines are deliberately not threaded. A copy acts on the INPUT OBJECT -- the size and
+# hyperparameter container, whose type the definition list fixes -- so it cannot depend on a callable
+# baked into a level's compute function. Nested copy routines therefore keep their untokened names and
+# existing cache entries. Revisit only if a copy routine ever needs to know a baked-in callable.
 def get_copy_from_def(function_definition_list, gradient=False):
     if gradient:
         prefix = gradient_copy_prefix
@@ -314,12 +418,20 @@ def get_copy_from_def(function_definition_list, gradient=False):
     return get_routine(get_processed_definition_list(function_definition_list, prefix))
 
 
-def get_cpuest_from_def(function_definition_list, gradient=False):
+# CPUEST routines ARE threaded, because unlike a copy they act on the PROCESSED object, and a level
+# that substitutes the processed object has to substitute it here too. `cpuest_add_simple` forwards
+# whatever it is handed, which for such a level means the estimator chain below it is typed against the
+# wrong object and does not compile. Threading is safe because `call_level_addition` only delivers to a
+# level whose constructor declares the argument, and a level carrying no parameters is called exactly
+# as before.
+def get_cpuest_from_def(function_definition_list, gradient=False, compilation_parameter_list=None):
     if gradient:
         prefix = gradient_cpuest_prefix
     else:
         prefix = cpuest_prefix
-    return get_routine(get_processed_definition_list(function_definition_list, prefix))
+    return get_routine(
+        get_processed_definition_list(function_definition_list, prefix), compilation_parameter_list
+    )
 
 
 # Creating initialized input objects.

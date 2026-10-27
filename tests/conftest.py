@@ -101,6 +101,25 @@ def xyz_nhatoms(xyz):
     return np.sum(np.array(nuclear_charges) != 1)
 
 
+def unsaturated_xyz_list(min_nhatoms, max_nhatoms, num_molecules):
+    """Perturbed xyzs with no more hydrogens than heavy atoms, i.e. the unsaturated end.
+
+    Tests that add or remove an electron want molecules that can take one: QM7's saturated
+    four-atom entries make awkward cations and worse anions, while counting hydrogens picks
+    out the aromatics and their relatives -- pyrrole, furan, thiophene, imidazole, oxazole,
+    thiazole -- with no bond perception needed. C6H6 passes the filter, C6H14 does not.
+    """
+    selected = []
+    for xyz in perturbed_xyz_nhatoms_interval(min_nhatoms, max_nhatoms):
+        symbols = [line.split()[0] for line in open(xyz).read().splitlines()[2:] if line.strip()]
+        hydrogens = sum(1 for symbol in symbols if symbol == "H")
+        if hydrogens <= len(symbols) - hydrogens:
+            selected.append(xyz)
+        if len(selected) == num_molecules:
+            break
+    return selected
+
+
 def perturbed_xyz_nhatoms_interval(min_nhatoms, max_nhatoms, seed=1, excluded_xyzs=None):
     """
     Find perturbed xyzs with a small enough number of heavy atoms.
@@ -116,6 +135,25 @@ def perturbed_xyz_nhatoms_interval(min_nhatoms, max_nhatoms, seed=1, excluded_xy
         if (nhatoms >= min_nhatoms) and (nhatoms <= max_nhatoms):
             output.append(xyz)
     return output
+
+
+qm7_smiles_txt = test_data_dir + "/QM7_SMILES.txt"
+
+
+def get_qm7_smiles(nmolecules=None):
+    """SMILES shipped with the repo, as a stand-in dataset for anything chemistry-flavoured.
+
+    Used in preference to FreeSolv or the electrochemical-stability set: those live under
+    $DATA and are not present on every machine, while this file is in test_data. Pass
+    ``nmolecules`` to take a prefix -- the file holds 7041 entries and most tests want far
+    fewer.
+    """
+    with open(qm7_smiles_txt, "r") as smiles_file:
+        smiles = [line.strip() for line in smiles_file if line.strip()]
+    if nmolecules is not None:
+        assert nmolecules <= len(smiles), f"only {len(smiles)} SMILES available"
+        smiles = smiles[:nmolecules]
+    return smiles
 
 
 def get_qm7_hof():

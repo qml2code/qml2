@@ -24,6 +24,8 @@ class Compound:
         coordinates=None,
         nuclear_charges=None,
         atomtypes=None,
+        charge=0,
+        spin=None,
     ):
         self.coordinates = None
         self.nuclear_charges = None
@@ -57,6 +59,15 @@ class Compound:
         else:
             self.name = repr(xyz)
         self.representation = None
+
+        self.charge = charge
+        if spin is None:
+            self.spin = self.default_spin_val()
+        else:
+            self.spin = spin
+
+    def default_spin_val(self):
+        return (sum(self.nuclear_charges) - self.charge) % 2
 
     def generate_coulomb_matrix(self, size=29):
         self.representation = generate_coulomb_matrix(

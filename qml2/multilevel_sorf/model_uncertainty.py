@@ -22,11 +22,11 @@ class MultilevelSORFModelUncertainty(MultilevelSORFModel):
         intensive_quantity_shift=False,
         extensive_quantity_shift=False,
         extensive_features=False,
-        error_ln_relative_l2reg_range=[-20.0, 2.0],
-        error_ln_relative_l2reg_opt_iterpts=64,
+        error_ln_l2reg_diag_ratio_bounds=[-20.0, 2.0],
+        error_l2reg_total_iterpts=64,
         uncertainty_expression=log_uncertainty,
         error_model_kwargs={},
-        **other_kwargs
+        **other_kwargs,
     ):
         """
         Combined class for calculating both multilevel SORF model result and the corresponding uncertainty.
@@ -46,10 +46,10 @@ class MultilevelSORFModelUncertainty(MultilevelSORFModel):
             uncertainty_function_definition_list += [normalization_lvl]
             uncertainty_parameter_list += [{}]
         used_uncertainty_model_kwargs = overwrite_when_possible(other_kwargs, error_model_kwargs)
-        used_uncertainty_model_kwargs["ln_relative_l2reg_range"] = error_ln_relative_l2reg_range
         used_uncertainty_model_kwargs[
-            "ln_relative_l2reg_opt_iterpts"
-        ] = error_ln_relative_l2reg_opt_iterpts
+            "ln_l2reg_diag_ratio_bounds"
+        ] = error_ln_l2reg_diag_ratio_bounds
+        used_uncertainty_model_kwargs["l2reg_total_iterpts"] = error_l2reg_total_iterpts
         self.msorf_uncertainty_model = MultilevelSORFModel(
             uncertainty_function_definition_list,
             uncertainty_parameter_list,

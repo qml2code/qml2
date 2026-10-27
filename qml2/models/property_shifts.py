@@ -5,6 +5,17 @@ from ..utils import get_numba_list
 
 @jit_
 def element_counts(possible_nuclear_charges, nuclear_charges, output):
+    """Per-element atom counts, over the given element basis.
+
+    Iterating over the BASIS rather than over the molecule's charges is what makes an element
+    outside the basis contribute zero instead of raising: it is simply never counted. That is
+    relied upon for the extensive shift, whose basis comes from the training set alone
+    (`MultilevelSORFModel.init_training_set_possible_nuclear_charges`), so a test molecule may
+    legitimately contain elements the basis does not list. Contrast
+    `qml2.utils.get_element_ids_from_sorted`, which resolves charges THROUGH the basis via
+    `searchsorted_wexception` and therefore does raise on an unknown element -- the two have
+    opposite failure behaviour by design, so do not reason from one to the other.
+    """
     for i in range(possible_nuclear_charges.shape[0]):
         output[i] = sum_(nuclear_charges == possible_nuclear_charges[i])
 

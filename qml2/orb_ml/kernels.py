@@ -373,7 +373,111 @@ class OML_KernelInput:
         )
 
 
+class ConcatenatedPairKernelInput:
+    """A list of Slater pairs as TWO single-determinant inputs rather than one merged one.
+
+    `OML_KernelInput` puts both determinants of a pair into a single weighted orbital list
+    and negates the first determinant's weights, so the kernel it produces is
+
+        K(P, Q) = K00 - K01 - K10 + K11,
+
+    Kab being the kernel between determinant a of P and determinant b of Q. That is the
+    exact counterpart of `FJKRepresentationCalc(concatenate_components=False)`, whose
+    feature vector is likewise a difference of the two determinants'.
+
+    With `concatenate_components=True` the feature vector is instead the two determinants'
+    vectors laid end to end, and the inner product of two concatenations is the sum of the
+    per-block inner products, with no cross terms:
+
+        K(P, Q) = K00 + K11.
+
+    Hence this class: one ordinary `OML_KernelInput` holding determinant 0 of every pair,
+    another holding determinant 1, and their kernels added.
+
+    Splitting the pair changes nothing below it. Sigma rescaling is per feature and weight
+    normalization is per ORBITAL (`normalize_orb_scalar_rep_weights`), so neither ever
+    looked across determinants; and `OML_KernelInput` copies the scalar representations it
+    is given, so the two halves rescale independently rather than twice over.
+
+    The ORDER of the determinants matters exactly as it does in the representation: a
+    training set assembled as (gas, solvated) cannot be used against pairs assembled the
+    other way round.
+    """
+
+    def __init__(self, oml_slater_pair_list):
+        for pair in oml_slater_pair_list:
+            assert is_pair_rep(pair), (
+                "ConcatenatedPairKernelInput needs Slater pairs to have determinants to "
+                f"concatenate; got {type(pair).__name__}"
+            )
+            assert len(pair.comps) == 2, (
+                "only two-determinant pairs are supported, "
+                f"got one with {len(pair.comps)} determinants"
+            )
+        self.num_determinants = 2
+        self.determinant_inputs = [
+            OML_KernelInput([pair.comps[determinant_id] for pair in oml_slater_pair_list])
+            for determinant_id in range(self.num_determinants)
+        ]
+        self.num_mols = len(oml_slater_pair_list)
+
+    def init_temp_arrs(self, sigmas, norm="l2"):
+        for determinant_input in self.determinant_inputs:
+            determinant_input.init_temp_arrs(sigmas, norm=norm)
+
+
+def get_kernel_input(compound_list, concatenate_components=False):
+    if concatenate_components:
+        return ConcatenatedPairKernelInput(compound_list)
+    else:
+        return OML_KernelInput(compound_list)
+
+
 def kernel_from_processed_input(
+    A_input: OML_KernelInput | ConcatenatedPairKernelInput,
+    B_input: OML_KernelInput | ConcatenatedPairKernelInput | None,
+    sigmas: ndarray,
+    global_sigma: float = None,
+    norm: str = "l2",
+    out=None,
+):
+    """Kernel matrix, dispatching on how a Slater pair's determinants were combined.
+
+    Kept as one entry point so that callers (`FJKModel` above all) need not know which of
+    the two treatments they are holding.
+    """
+    if isinstance(A_input, ConcatenatedPairKernelInput):
+        assert B_input is None or isinstance(B_input, ConcatenatedPairKernelInput), (
+            "both sides of a concatenated-pair kernel have to be concatenated pairs; "
+            f"got {type(B_input).__name__} on the right"
+        )
+        kernel_matrix = None
+        for determinant_id in range(A_input.num_determinants):
+            if B_input is None:
+                B_determinant_input = None
+            else:
+                B_determinant_input = B_input.determinant_inputs[determinant_id]
+            determinant_kernel = single_determinant_kernel_from_processed_input(
+                A_input.determinant_inputs[determinant_id],
+                B_determinant_input,
+                sigmas,
+                global_sigma=global_sigma,
+                norm=norm,
+                # `out` is filled by the first determinant and added to by the rest, so it
+                # must not be handed to more than one of them.
+                out=out if kernel_matrix is None else None,
+            )
+            if kernel_matrix is None:
+                kernel_matrix = determinant_kernel
+            else:
+                kernel_matrix += determinant_kernel
+        return kernel_matrix
+    return single_determinant_kernel_from_processed_input(
+        A_input, B_input, sigmas, global_sigma=global_sigma, norm=norm, out=out
+    )
+
+
+def single_determinant_kernel_from_processed_input(
     A_input: OML_KernelInput,
     B_input: OML_KernelInput | None,
     sigmas: ndarray,
@@ -433,29 +537,31 @@ def kernel_from_processed_input(
 
 
 # Convenient interfaces.
-def gaussian_kernel(A, B, sigmas, global_sigma, norm="l2", out=None):
-    A_input = OML_KernelInput(A)
-    B_input = OML_KernelInput(B)
+def gaussian_kernel(A, B, sigmas, global_sigma, norm="l2", concatenate_components=False, out=None):
+    A_input = get_kernel_input(A, concatenate_components=concatenate_components)
+    B_input = get_kernel_input(B, concatenate_components=concatenate_components)
     return kernel_from_processed_input(
         A_input, B_input, sigmas, global_sigma=global_sigma, norm=norm, out=out
     )
 
 
-def gaussian_kernel_symmetric(A, sigmas, global_sigma, norm="l2", out=None):
-    A_input = OML_KernelInput(A)
+def gaussian_kernel_symmetric(
+    A, sigmas, global_sigma, norm="l2", concatenate_components=False, out=None
+):
+    A_input = get_kernel_input(A, concatenate_components=concatenate_components)
     return kernel_from_processed_input(
         A_input, None, sigmas, global_sigma=global_sigma, norm=norm, out=out
     )
 
 
-def linear_kernel(A, B, sigmas, norm="l2", out=None):
-    A_input = OML_KernelInput(A)
-    B_input = OML_KernelInput(B)
+def linear_kernel(A, B, sigmas, norm="l2", concatenate_components=False, out=None):
+    A_input = get_kernel_input(A, concatenate_components=concatenate_components)
+    B_input = get_kernel_input(B, concatenate_components=concatenate_components)
     return kernel_from_processed_input(A_input, B_input, sigmas, norm=norm, out=out)
 
 
-def linear_kernel_symmetric(A, sigmas, norm="l2", out=None):
-    A_input = OML_KernelInput(A)
+def linear_kernel_symmetric(A, sigmas, norm="l2", concatenate_components=False, out=None):
+    A_input = get_kernel_input(A, concatenate_components=concatenate_components)
     return kernel_from_processed_input(A_input, None, sigmas, norm=norm, out=out)
 
 
@@ -538,6 +644,20 @@ def sign_checked_sqrts(vec):
 
 
 def rep_stddevs_from_kernel_input(compound_kernel_input):
+    if isinstance(compound_kernel_input, ConcatenatedPairKernelInput):
+        # Concatenation does not double the number of sigmas -- one set describes a single
+        # determinant either way (see FJKRepresentationCalc.component_bounds) -- so the
+        # spread is estimated on each determinant and the two averaged. Averaging standard
+        # deviations is not the pooled standard deviation, but this is the INITIAL GUESS
+        # that optimize_hyperparameters then scales by a fitted multiplier, so what matters
+        # is the relative size of the components rather than the absolute value.
+        determinant_stddevs = [
+            rep_stddevs_from_kernel_input(determinant_input)
+            for determinant_input in compound_kernel_input.determinant_inputs
+        ]
+        return sum(determinant_stddevs[1:], start=determinant_stddevs[0]) / len(
+            determinant_stddevs
+        )
     avs_av2s = find_vec_moments(
         compound_kernel_input.scalar_reps,
         compound_kernel_input.orb_weights,
@@ -552,9 +672,18 @@ def rep_stddevs_from_kernel_input(compound_kernel_input):
     return sigmas
 
 
-def rep_stddevs(oml_compound_list=None, compound_kernel_input=None):
+def rep_stddevs(oml_compound_list=None, compound_kernel_input=None, concatenate_components=False):
+    """Spread of each representation component, for the initial sigma guess.
+
+    `concatenate_components` has to match the kernel the sigmas are destined for. On a
+    Slater pair list the default builds the DIFFERENCE input, whose orbital weights are
+    negated for the first determinant, so the moments it reports are those of a quantity the
+    concatenated kernel never forms.
+    """
     if compound_kernel_input is None:
-        compound_kernel_input = OML_KernelInput(oml_compound_list)
+        compound_kernel_input = get_kernel_input(
+            oml_compound_list, concatenate_components=concatenate_components
+        )
     return rep_stddevs_from_kernel_input(compound_kernel_input)
 
 
@@ -589,10 +718,13 @@ def sigmas_redivied_by_mats(
     compound_kernel_input=None,
     stddevs=None,
     norm="l2",
+    concatenate_components=False,
 ):
     if stddevs is None:
         stddevs = rep_stddevs(
-            oml_compound_list=oml_compound_list, compound_kernel_input=compound_kernel_input
+            oml_compound_list=oml_compound_list,
+            compound_kernel_input=compound_kernel_input,
+            concatenate_components=concatenate_components,
         )
     comp_mat_map = component_id_mat_map(oml_rep_params)
     num_comps = max(max_(comp_ids) for comp_ids in comp_mat_map) + 1

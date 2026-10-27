@@ -2,6 +2,8 @@
 # that they differ from standard definitions of Huber and LogCosh functions to conform to limiting behavior
 # discussed in the mSORF paper.
 
+import warnings
+
 from scipy.optimize import minimize
 
 from ..basic_utils import display_scipy_convergence
@@ -10,6 +12,7 @@ from ..jit_interfaces import (
     abs_,
     all_,
     any_,
+    array_,
     dbool_,
     dot_,
     empty_,
@@ -97,10 +100,21 @@ class RMSE(MSE):
         return sqrt_(super().__call__(err_vals))
 
     def calc_wders(self, err_vals):
-        MSE_val, MSE_der = super().calc_wders(err_vals)
-        RMSE_val = sqrt_(MSE_val)
-        RMSE_der = MSE_der / 2.0 / RMSE_val
-        return RMSE_val, RMSE_der
+        # Deliberately NOT super().calc_wders(): MSE.calc_wders returns `self(err_vals)` as
+        # its value, and `self` is this RMSE instance, so __call__ dispatched back here and
+        # the square root was taken TWICE. The returned value was sqrt(RMSE) rather than
+        # RMSE, and the gradient was divided by that same wrong number. Computing the mean
+        # square directly is what makes the value agree with __call__ and the gradient agree
+        # with finite differences.
+        mean_square = mean_(err_vals**2)
+        RMSE_val = sqrt_(mean_square)
+        if RMSE_val <= tiny_:
+            # d(RMSE)/d(err) = err / (n * RMSE) is undefined at the origin -- RMSE has a
+            # cusp there, like MAE -- and dividing anyway gave inf or nan, which then
+            # propagated silently into whatever consumed the gradient. Zero is the
+            # subgradient at the kink, and what the self-consistent losses already return.
+            return RMSE_val, zeros_(err_vals.shape)
+        return RMSE_val, err_vals / (err_vals.shape[0] * RMSE_val)
 
 
 # Rescaled Huber.
@@ -406,3 +420,171 @@ class SquaredSelfConsistentLogCosh(SquaredLoss):
                 compromise_coefficient, newton_relative_convergence=newton_relative_convergence
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# Aggregating grouped (leave-one-group-out) cross-validation residuals.
+# ---------------------------------------------------------------------------
+
+GROUPED_CV_MODES = ("micro", "macro")
+SUPPORT_WEIGHT_SCHEMES = ("support", "sqrt_support")
+
+
+def group_residual_indices(group_ids):
+    """Member indices of each group, in order of first appearance.
+
+    Negative labels raise rather than being dropped: in a cross-validation context every
+    residual came out of some fold, so an ungrouped one means the caller lost track of the
+    alignment between residuals and folds.
+    """
+    order = {}
+    members = []
+    for index, label in enumerate(group_ids):
+        label = int(label)
+        if label < 0:
+            raise ValueError(
+                f"group_ids[{index}] is {label}; every cross-validation residual must "
+                "belong to a fold, so negative (ungrouped) labels are not allowed here"
+            )
+        if label not in order:
+            order[label] = len(members)
+            members.append([])
+        members[order[label]].append(index)
+    return members
+
+
+def support_weight_vector(group_sizes, aggregation_weights):
+    """Resolve ``aggregation_weights`` into one multiplier per group."""
+    if aggregation_weights is None:
+        return None
+    if isinstance(aggregation_weights, str):
+        if aggregation_weights not in SUPPORT_WEIGHT_SCHEMES:
+            raise ValueError(
+                f"aggregation_weights must be one of {SUPPORT_WEIGHT_SCHEMES}, an array, "
+                f"or None; got {aggregation_weights!r}"
+            )
+        sizes = array_([float(size) for size in group_sizes])
+        return sizes if aggregation_weights == "support" else sqrt_(sizes)
+    weights = array_(aggregation_weights)
+    if weights.shape[0] != len(group_sizes):
+        raise ValueError(
+            f"aggregation_weights has {weights.shape[0]} entries for " f"{len(group_sizes)} groups"
+        )
+    return weights
+
+
+def grouped_cv_loss(
+    residuals,
+    group_ids,
+    point_loss,
+    mode="micro",
+    across_group_loss=None,
+    aggregation_weights=None,
+):
+    """Scalar objective from grouped-cross-validation residuals.
+
+    Sits between the per-point out-of-fold residuals a grouped-CV pass produces and the
+    scalar a hyperparameter optimizer minimizes, when the held-out folds are groups of
+    DIFFERENT sizes (scaffolds, in practice).
+
+    The two modes are the standard micro/macro averaging vocabulary:
+
+    ``mode="micro"`` (default)
+        Pool every residual into one vector and apply ``point_loss`` once. Weights each
+        MOLECULE equally, and hence each group in proportion to its size. This is the group
+        generalization of the leave-one-out objective already in use, and the
+        self-consistent-scale construction applies to the pooled vector unchanged.
+
+    ``mode="macro"``
+        Compute a per-group value ``s_g = point_loss(residuals in g)`` (the FIRST-LEVEL, or
+        per-point, loss), optionally scale those values, then apply ``across_group_loss``
+        (the SECOND-LEVEL, or across-group, loss) to the resulting vector. Weights each
+        GROUP equally regardless of size. ``across_group_loss=None`` means the plain mean
+        over groups, which is textbook macro-averaging.
+
+    These are endpoints of one weighting axis rather than unrelated options: support-weighted
+    macro-averaging -- per-group values weighted by group size -- recovers micro-averaging.
+    With the default across-group mean that recovery is EXACT for any ``point_loss`` that is
+    a plain mean of a per-point function (MAE, MSE), and approximate otherwise (RMSE, which
+    is a nonlinear function of such a mean). Verified both ways in the tests.
+
+    Note that "first-level" and "second-level" here refer only to the two stages of this
+    aggregation; they are unrelated to the two-level hyperparameter/coefficient optimization
+    elsewhere in the model.
+
+    Args:
+        residuals: 1D array of out-of-fold residuals, one per data point.
+        group_ids: 1D int array aligning each residual to its fold. Negative labels raise.
+        point_loss: callable(residual_vector) -> scalar. In micro mode this is the ONLY
+            loss applied.
+        mode: "micro" or "macro".
+        across_group_loss: macro only; callable over the vector of per-group values.
+            Defaults to the mean.
+        aggregation_weights: macro only. The "support weights" of the averaging literature.
+            ``None`` (uniform), ``"support"`` (w_g = group size), ``"sqrt_support"``
+            (w_g = sqrt of group size), or an explicit array, one entry per group in order
+            of first appearance.
+
+    IMPORTANT, and the two places this is easy to get silently wrong:
+
+    * ``aggregation_weights`` multiply the per-group VALUES, outside the first-level loss.
+      For a nonlinear ``point_loss``, ``w * point_loss(r)`` and ``point_loss(w * r)``
+      differ, and the outside form is what support weighting means. The inside form is not
+      offered here; it would need its own clearly-named parameter.
+    * Small groups give noisy first-level values. A singleton's ``s_g`` is one residual --
+      pure noise -- and a size-3 group's is high variance, so a macro loss over UNWEIGHTED
+      per-group values trusts the least reliable estimates most. Uniform weights combined
+      with a robust ``across_group_loss`` is the configuration most likely to destabilize
+      hyperparameter selection; precision-style weights ("support", or "sqrt_support") are
+      the principled choice, and "support" recovers micro exactly for mean-type losses.
+
+    On the self-consistent losses as ``point_loss``: they are well defined on a
+    one-element input, so macro mode neither forbids singleton groups nor falls back to a
+    plain statistic for them. Checked rather than assumed -- on a single residual they stay
+    finite, keep exact positive homogeneity (L(c*r) = c*L(r)), and reduce to a fixed
+    multiple of |r| set by the compromise coefficient. What remains is the statistical
+    caveat above, so macro mode warns when singletons are present rather than silently
+    resting the objective on them.
+    """
+    if mode not in GROUPED_CV_MODES:
+        raise ValueError(f"mode must be one of {GROUPED_CV_MODES}, got {mode!r}")
+    if residuals.shape[0] != len(group_ids):
+        raise ValueError(f"{residuals.shape[0]} residuals against {len(group_ids)} group labels")
+
+    if mode == "micro":
+        # Refused rather than ignored: a second-level loss or a set of support weights that
+        # silently does nothing is a foot-gun, and reads as if the caller got macro
+        # behaviour.
+        if across_group_loss is not None or aggregation_weights is not None:
+            raise ValueError(
+                "across_group_loss and aggregation_weights apply to mode='macro' only; "
+                "in micro mode every residual is pooled into a single point_loss call, so "
+                "passing them would have no effect"
+            )
+        # group_ids still validated, so a misaligned call fails the same way in both modes.
+        group_residual_indices(group_ids)
+        return point_loss(residuals)
+
+    members = group_residual_indices(group_ids)
+    group_sizes = [len(indices) for indices in members]
+
+    nsingletons = sum(1 for size in group_sizes if size == 1)
+    if nsingletons:
+        warnings.warn(
+            f"macro-averaging over {len(group_sizes)} groups of which {nsingletons} hold a "
+            "single point: those per-group values are single residuals, so that much of "
+            "the objective rests on pure noise. Consider aggregation_weights='support' "
+            "(or 'sqrt_support'), which down-weights them.",
+            stacklevel=2,
+        )
+
+    group_values = array_([point_loss(residuals[indices]) for indices in members])
+
+    weights = support_weight_vector(group_sizes, aggregation_weights)
+    if weights is not None:
+        # Outside the first-level loss; see the docstring.
+        group_values = group_values * weights / mean_(weights)
+
+    if across_group_loss is None:
+        return mean_(group_values)
+    return across_group_loss(group_values)
